@@ -39,7 +39,10 @@ class IngestionRunner:
             dec = float(row.get("dec", 0.0))
             tic = str(row.get("tic_id", "")).replace("TIC", "").strip() or None
             gaia = (
-                str(row.get("gaia_id", "")).replace("Gaia DR3", "").replace("Gaia DR2", "").strip()
+                str(row.get("gaia_dr3_id") or row.get("gaia_id") or "")
+                .replace("Gaia DR3", "")
+                .replace("Gaia DR2", "")
+                .strip()
                 or None
             )
             period = float(row.get("pl_orbper", 0.0)) if row.get("pl_orbper") is not None else None

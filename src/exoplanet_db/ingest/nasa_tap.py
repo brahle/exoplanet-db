@@ -57,7 +57,7 @@ class NasaTapClient:
             "pl_name",
             "hostname",
             "tic_id",
-            "gaia_id",
+            "gaia_dr3_id",
             "sy_snum",
             "sy_pnum",
             "discoverymethod",
