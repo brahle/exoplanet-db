@@ -37,7 +37,7 @@ class IngestionRunner:
 
             ra = float(row.get("ra", 0.0))
             dec = float(row.get("dec", 0.0))
-            tic = str(row.get("tic_id", "")).replace("TIC", "").strip() or None
+            tic = str(row.get("tic_id") or "").replace("TIC", "").strip() or None
             gaia = (
                 str(row.get("gaia_dr3_id") or row.get("gaia_id") or "")
                 .replace("Gaia DR3", "")
@@ -60,12 +60,18 @@ class IngestionRunner:
             duration = (
                 float(row.get("pl_trandur", 0.0)) if row.get("pl_trandur") is not None else None
             )
-            depth = float(row.get("pl_trandep", 0.0)) if row.get("pl_trandep") is not None else None
+            # pscomppars publishes pl_trandep in percent; store ppm like every other source.
+            depth = (
+                float(row["pl_trandep"]) * 10_000.0 if row.get("pl_trandep") is not None else None
+            )
 
             # 1. Target matching
-            target_stmt = select(Target).where(
-                (Target.primary_name == hostname) | (Target.tic_id == tic)
-            )
+            # Match on TIC only when the row has one, so TIC-less hosts (pulsars, microlensing)
+            # are never merged with each other.
+            target_cond = Target.primary_name == hostname
+            if tic:
+                target_cond = target_cond | (Target.tic_id == tic)
+            target_stmt = select(Target).where(target_cond)
             res = await self.session.execute(target_stmt)
             target = res.scalars().first()
 
