@@ -21,9 +21,11 @@ database_url = os.getenv("DATABASE_URL")
 if database_url:
     # Handle postgres:// vs postgresql:// and asyncpg vs psycopg2
     if database_url.startswith("postgres://"):
-        database_url = database_url.replace("postgres://", "postgresql://", 1)
-    if "+asyncpg" in database_url:
-        database_url = database_url.replace("+asyncpg", "", 1)
+        database_url = database_url.replace("postgres://", "postgresql+psycopg2://", 1)
+    elif "+asyncpg" in database_url:
+        database_url = database_url.replace("+asyncpg", "+psycopg2", 1)
+    elif database_url.startswith("postgresql://") and not database_url.startswith("postgresql+"):
+        database_url = database_url.replace("postgresql://", "postgresql+psycopg2://", 1)
     config.set_main_option("sqlalchemy.url", database_url)
 else:
     current_url = config.get_main_option("sqlalchemy.url")
