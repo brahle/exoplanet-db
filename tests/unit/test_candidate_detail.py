@@ -203,3 +203,10 @@ async def test_detail_assets_and_import_map_resolve(client: AsyncClient):
 @pytest.mark.asyncio
 async def test_healthz_reports_package_version(client: AsyncClient):
     assert (await client.get("/healthz")).json()["version"] == app_module.APP_VERSION
+
+
+@pytest.mark.asyncio
+async def test_search_matches_source_identifiers(client: AsyncClient):
+    # "dossier-1" is only a report source_key, not a signal or target name
+    res = await client.get("/v1/candidates", params={"search": "dossier-1"})
+    assert [i["id"] for i in res.json()["items"]] == ["s1"]

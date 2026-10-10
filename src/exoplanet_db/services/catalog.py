@@ -118,6 +118,9 @@ class CatalogService:
                 | Target.primary_name.ilike(s_pat)
                 | Target.tic_id.ilike(s_pat)
                 | Target.gaia_dr3_id.ilike(s_pat)
+                # Identifiers from every source (TOI-1109.01, CTOI ..., eumemic keys), so a
+                # signal merged under its confirmed-planet name is still found by its TOI name
+                | Signal.id.in_(select(Report.signal_id).where(Report.source_key.ilike(s_pat)))
             )
             query = query.where(search_cond)
             count_query = count_query.where(search_cond)
