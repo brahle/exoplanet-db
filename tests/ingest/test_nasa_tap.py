@@ -71,3 +71,42 @@ async def test_nasa_composite_ingestion():
         assert snapshot.status == "validated"
         assert snapshot.record_count == 2
         assert snapshot.source_name == "nasa_pscomppars"
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_nasa_toi_ingestion():
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with session_factory() as session:
+        runner = IngestionRunner(session)
+        mock_tois = [
+            {
+                "toi": "1062.01",
+                "toidisplay": "TOI-1062.01",
+                "tid": "299799658",
+                "tfopwg_disp": "PC",
+                "pl_orbper": 4.115,
+                "pl_orbpererr1": 0.00001,
+                "pl_tranmid": 2460901.44,
+                "pl_trandurh": 1.05,
+                "pl_trandep": 538.9,
+                "ra": 38.12,
+                "dec": -78.02,
+                "st_pmra": 107.8,
+                "st_pmdec": 30.7,
+                "st_teff": 5394.0,
+                "st_rad": 0.89,
+                "st_tmag": 9.47,
+            }
+        ]
+        snapshot = await runner.ingest_nasa_toi(mock_tois)
+        assert snapshot.record_count == 1
+        assert snapshot.source_name == "nasa_toi"
+
+    await engine.dispose()
+

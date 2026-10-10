@@ -56,10 +56,16 @@ async def lifespan(app: FastAPI):
     await engine.dispose()
 
 
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://exoplanets.brahle.com").rstrip("/")
+
 app = FastAPI(
     title="Exoplanet DB API",
-    version="0.1.0",
+    version="0.1.8",
     description="AI agent-friendly, lightweight database of exoplanets and transit candidate dossiers with reproducibility tracking.",
+    servers=[
+        {"url": PUBLIC_BASE_URL, "description": "Production (marica)"},
+        {"url": "/", "description": "Current Origin"},
+    ],
     lifespan=lifespan,
 )
 
@@ -70,6 +76,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Mount MCP Remote SSE application for AI Agents
+from exoplanet_db.mcp.server import mcp
+
+app.mount("/mcp", mcp.sse_app())
+app.mount("/sse", mcp.sse_app())
 
 PORTAL_STATIC_DIR = Path(__file__).resolve().parent.parent / "portal" / "static"
 if not (PORTAL_STATIC_DIR / "index.html").exists():
@@ -100,16 +112,21 @@ ATTRIBUTION_METADATA = {
 def resolve_source_name(signal: Any) -> str:
     limits = getattr(signal, "scientific_limits", None) or []
     for l in limits:
-        if "NASA" in l:
+        if "eumemic" in l or "source_file" in l:
+            return "eumemic/exoplanets"
+        if "TOI" in l or "TFOPWG" in l:
+            return "nasa_toi"
+        if "composite row" in l:
             return "nasa_pscomppars"
         if "Absence from checked" in l or "Conditional diagnostic" in l:
             return "git:brahle/exoplanet-candidates"
         if "ExoFOP" in l:
             return "exofop_tess_ctoi"
-        if "eumemic" in l:
-            return "eumemic_catalog"
-    if getattr(signal, "current_disposition", "") == "confirmed_planet":
+    disp = getattr(signal, "current_disposition", "")
+    if disp == "confirmed_planet":
         return "nasa_pscomppars"
+    if disp == "planet_candidate":
+        return "nasa_toi"
     return "git:brahle/exoplanet-candidates"
 
 

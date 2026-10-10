@@ -87,3 +87,29 @@ async def test_eumemic_ingest_and_tier_mapping():
         assert fit.fit_model == "eumemic_tier_A"
 
     await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_eumemic_github_csv_format():
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    github_csv = """TIC,label,P_d,P_err,T0_BJD,Rp_Re,b,T14_h,depth_ppm,Tmag,Teff,Rstar,dist_pc,centroid,neighbours,notes,status,TRICERATOPS_FPP,TRICERATOPS_NFPP,upcoming_tess_sectors
+286763141,TOI-6284 (5.24 d; see status),5.244547698,1.05e-05,2458546.853,0.84,0.24,1.84,274.0,9.72,3548.0,0.46,21.0,"S62 TPF","none",chain,previously reported,0.027,0.00025,"110"
+"""
+    async with session_factory() as session:
+        adapter = EumemicIngest(session)
+        parsed = adapter.parse_candidates_csv(github_csv)
+        assert len(parsed) == 1
+        assert parsed[0]["tic"] == "286763141"
+        assert parsed[0]["candidate_id"] == "TOI-6284 (5.24 d; see status)"
+        assert abs(parsed[0]["period_d"] - 5.244547698) < 1e-6
+        assert abs(parsed[0]["depth_ppm"] - 274.0) < 1e-2
+
+        ingested = await adapter.ingest_candidates(parsed)
+        assert ingested == 1
+
+    await engine.dispose()

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import String, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
 
@@ -112,11 +112,21 @@ class CatalogService:
 
         if source:
             if source == "nasa_pscomppars":
-                query = query.where(Signal.current_disposition == "confirmed_planet")
-                count_query = count_query.where(Signal.current_disposition == "confirmed_planet")
+                cond = (Signal.current_disposition == "confirmed_planet") & ~Signal.scientific_limits.cast(String).ilike("%TOI%")
+                query = query.where(cond)
+                count_query = count_query.where(cond)
+            elif source == "nasa_toi":
+                cond = Signal.scientific_limits.cast(String).ilike("%TOI%")
+                query = query.where(cond)
+                count_query = count_query.where(cond)
+            elif "eumemic" in source:
+                cond = Signal.scientific_limits.cast(String).ilike("%eumemic%")
+                query = query.where(cond)
+                count_query = count_query.where(cond)
             elif "git" in source:
-                query = query.where(Signal.current_disposition != "confirmed_planet")
-                count_query = count_query.where(Signal.current_disposition != "confirmed_planet")
+                cond = Signal.scientific_limits.cast(String).ilike("%checked catalogues%") | Signal.scientific_limits.cast(String).ilike("%Conditional diagnostic%")
+                query = query.where(cond)
+                count_query = count_query.where(cond)
 
         if disposition:
             query = query.where(Signal.current_disposition == disposition)

@@ -112,8 +112,10 @@
 
         <select id="source-filter" class="filter-select">
           <option value="all">All Sources</option>
+          <option value="nasa_pscomppars">NASA Confirmed (pscomppars)</option>
+          <option value="nasa_toi">NASA TESS Candidates (TOI)</option>
+          <option value="eumemic/exoplanets">eumemic/exoplanets</option>
           <option value="git:brahle/exoplanet-candidates">brahle/exoplanet-candidates</option>
-          <option value="nasa_pscomppars">NASA Exoplanet Archive</option>
         </select>
 
         <select id="disposition-filter" class="filter-select">
@@ -198,30 +200,64 @@
 
         <h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--accent-cyan);">Available MCP Tools</h3>
         <ul style="padding-left: 1.5rem; margin-bottom: 1.5rem; color: var(--text-primary); line-height: 1.8;">
-          <li><code>lookup_target(name_or_id)</code> — Resolves target names, TIC IDs, Gaia DR3 IDs, and host star stellar parameters.</li>
-          <li><code>search_signals(disposition, min_period, max_period, min_depth, limit)</code> — Structured query over catalog signals.</li>
-          <li><code>get_dossier(signal_id)</code> — Comprehensive candidate dossier including transit ephemeris fits, timing consistency, localisation status, and scientific limits.</li>
-          <li><code>check_novelty(ra_deg, dec_deg, period_d, epoch_bjd, depth_ppm)</code> — Returns evidentiary snapshots with timestamps, commit SHAs, near-matches, and unindexed sources. Strictly avoids subjective booleans.</li>
+          <li><code>lookup_target(identifier)</code> — Resolves host stars by TIC ID, Gaia DR3 ID, or primary star name (e.g. 'WASP-12' or '464547401').</li>
+          <li><code>search_signals(disposition, min_period_d, max_period_d, min_depth_ppm, limit)</code> — Structured query over catalog signals.</li>
+          <li><code>get_candidate_dossier(candidate_id)</code> — Full candidate dossier including ephemeris fits, timing consistency, localisation status, and scientific limits.</li>
+          <li><code>check_novelty(ra_deg, dec_deg, period_d, epoch_bjd, depth_ppm)</code> — Evaluates proposed signals against catalog records with evidentiary snapshots. Strictly avoids subjective booleans.</li>
+          <li><code>get_catalog_stats()</code> — Live summary metrics of total planets, candidates, and host stellar systems.</li>
         </ul>
 
-        <h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--accent-cyan);">MCP Server Configuration</h3>
-        <p style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 0.75rem;">
-          Connects external AI agents directly to the public read-only HTTPS REST API. No database credentials or internal cluster access required.
-        </p>
-        <pre style="background: var(--bg-card); padding: 1rem; border-radius: var(--radius-sm); border: 1px solid var(--border-color); font-family: var(--font-mono); font-size: 0.8125rem; overflow-x: auto; color: var(--text-primary);">
+        <h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--accent-cyan);">MCP Connection Options</h3>
+
+        <div style="margin-bottom: 1.25rem;">
+          <h4 style="font-size: 0.9375rem; font-weight: 600; margin-bottom: 0.25rem; color: var(--text-primary);">Option 1: Remote SSE Endpoint (Zero Local Installation)</h4>
+          <p style="color: var(--text-secondary); font-size: 0.8125rem; margin-bottom: 0.5rem;">
+            Recommended for Claude Desktop, Cursor, Antigravity, or any modern MCP client. Connects directly to the hosted server without cloning or running Python locally:
+          </p>
+          <pre style="background: var(--bg-card); padding: 1rem; border-radius: var(--radius-sm); border: 1px solid var(--border-color); font-family: var(--font-mono); font-size: 0.8125rem; overflow-x: auto; color: var(--text-primary);">
 {
   "mcpServers": {
     "exoplanet-db": {
-      "command": "python",
-      "args": ["-m", "exoplanet_db.mcp.server"],
-      "env": {
-        "EXOPLANET_API_URL": "https://exoplanets.brahle.com"
-      }
+      "url": "https://exoplanets.brahle.com/mcp/sse"
     }
   }
 }</pre>
-        <div style="margin-top: 1.5rem;">
+        </div>
+
+        <div style="margin-bottom: 1.25rem;">
+          <h4 style="font-size: 0.9375rem; font-weight: 600; margin-bottom: 0.25rem; color: var(--text-primary);">Option 2: Run via uvx (No Repo Clone Needed)</h4>
+          <p style="color: var(--text-secondary); font-size: 0.8125rem; margin-bottom: 0.5rem;">
+            Runs the stdio client in an isolated ephemeral environment via Astral's uv:
+          </p>
+          <pre style="background: var(--bg-card); padding: 1rem; border-radius: var(--radius-sm); border: 1px solid var(--border-color); font-family: var(--font-mono); font-size: 0.8125rem; overflow-x: auto; color: var(--text-primary);">
+{
+  "mcpServers": {
+    "exoplanet-db": {
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/brahle/exoplanet-db.git", "exoplanet-mcp"]
+    }
+  }
+}</pre>
+        </div>
+
+        <div style="margin-bottom: 1.25rem;">
+          <h4 style="font-size: 0.9375rem; font-weight: 600; margin-bottom: 0.25rem; color: var(--text-primary);">Option 3: Local Installation via pip</h4>
+          <pre style="background: var(--bg-card); padding: 1rem; border-radius: var(--radius-sm); border: 1px solid var(--border-color); font-family: var(--font-mono); font-size: 0.8125rem; overflow-x: auto; color: var(--text-primary);">
+pip install git+https://github.com/brahle/exoplanet-db.git
+
+# In your MCP config:
+{
+  "mcpServers": {
+    "exoplanet-db": {
+      "command": "exoplanet-mcp"
+    }
+  }
+}</pre>
+        </div>
+
+        <div style="margin-top: 1.5rem; display: flex; gap: 1rem; align-items: center;">
           <a href="/docs" target="_blank" class="btn-primary" style="display: inline-block; text-decoration: none;">Interactive REST OpenAPI Docs (/docs)</a>
+          <a href="/openapi.json" target="_blank" style="color: var(--accent-cyan); font-size: 0.875rem; text-decoration: none;">View OpenAPI JSON (/openapi.json)</a>
         </div>
       </div>
     </section>

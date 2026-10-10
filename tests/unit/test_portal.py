@@ -95,3 +95,10 @@ async def test_human_portal_endpoints(portal_test_session: AsyncSession):
         assert "candidates_total" in stats_data
         assert "total_targets" in stats_data
         assert "attribution" in stats_data
+
+        # 5. Test /openapi.json has valid servers list
+        res_openapi = await client.get("/openapi.json")
+        assert res_openapi.status_code == 200
+        openapi_data = res_openapi.json()
+        assert "servers" in openapi_data
+        assert len(openapi_data["servers"]) > 0

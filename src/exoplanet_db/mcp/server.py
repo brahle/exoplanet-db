@@ -506,3 +506,12 @@ async def get_catalog_stats() -> dict[str, Any]:
             return {"error": f"Failed to fetch stats: HTTP {resp.status_code}"}
         return resp.json()
 
+
+def main():
+    mcp.run(transport="stdio")
+
+
+if __name__ == "__main__":
+    main()
+
+

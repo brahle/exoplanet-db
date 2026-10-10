@@ -29,7 +29,7 @@ spec:
             fsGroup: 10001
           containers:
             - name: ingest
-              image: harbor.brahle.com/library/exoplanet-db:v0.1.8
+              image: harbor.brahle.com/library/exoplanet-db:v0.1.9
               imagePullPolicy: IfNotPresent
               command:
                 - python

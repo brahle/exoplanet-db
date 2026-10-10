@@ -41,16 +41,19 @@ class EumemicIngest:
         reader = csv.DictReader(io.StringIO(csv_content.strip()))
         rows = []
         for r in reader:
-            # Handle possible key naming variations
+            # Handle possible key naming variations across candidates.csv and candidates_allsky.csv
             tic = (r.get("tic") or r.get("TIC") or r.get("tic_id") or r.get("tid") or "").strip()
-            period_str = r.get("period") or r.get("pl_orbper") or r.get("period_d")
-            t0_str = r.get("t0") or r.get("t0_bjd") or r.get("pl_tranmid") or r.get("epoch")
-            tier = r.get("tier") or r.get("Tier") or "A"
+            period_str = r.get("period") or r.get("P_d") or r.get("pl_orbper") or r.get("period_d")
+            t0_str = r.get("t0") or r.get("T0_BJD") or r.get("t0_bjd") or r.get("pl_tranmid") or r.get("epoch")
+            tier = (r.get("tier") or r.get("Tier") or "A").strip()
             status = r.get("status") or r.get("disposition") or "planet_candidate"
             depth_str = r.get("depth") or r.get("depth_ppm") or r.get("pl_trandep")
-            dur_str = r.get("duration") or r.get("duration_h") or r.get("pl_trandur")
+            dur_str = r.get("duration") or r.get("T14_h") or r.get("duration_h") or r.get("pl_trandur")
             ra_str = r.get("ra") or r.get("ra_deg")
             dec_str = r.get("dec") or r.get("dec_deg")
+            p_err_val = r.get("P_err") or r.get("period_err")
+            t0_err_val = r.get("t0_err") or r.get("T0_err")
+            candidate_label = (r.get("label") or r.get("candidate_id") or f"TIC {tic}.01").strip()
 
             if not tic or not period_str or not t0_str:
                 continue
@@ -69,14 +72,12 @@ class EumemicIngest:
                 rows.append(
                     {
                         "tic": tic,
-                        "candidate_id": r.get("candidate_id") or f"TIC-{tic}.01",
+                        "candidate_id": candidate_label,
                         "period_d": period,
-                        "period_err_d": float(r.get("period_err", 0.0001))
-                        if r.get("period_err")
-                        else None,
+                        "period_err_d": float(p_err_val) if p_err_val else None,
                         "t0_btjd": btjd,
                         "t0_bjd_tdb": bjd_tdb,
-                        "t0_err_d": float(r.get("t0_err", 0.001)) if r.get("t0_err") else None,
+                        "t0_err_d": float(t0_err_val) if t0_err_val else None,
                         "depth_ppm": float(depth_str) if depth_str else 1000.0,
                         "duration_h": float(dur_str) if dur_str else 2.5,
                         "tier": tier.upper(),
@@ -227,3 +228,39 @@ class EumemicIngest:
         self.session.add(snapshot)
         await self.session.commit()
         return count
+
+
+async def fetch_and_ingest_eumemic(session: AsyncSession) -> int:
+    """Fetches candidate catalogs directly from eumemic/exoplanets on GitHub and ingests them."""
+    import httpx
+
+    ingest = EumemicIngest(session)
+    total_ingested = 0
+    urls = [
+        (
+            "https://raw.githubusercontent.com/eumemic/exoplanets/main/results_public/candidates.csv",
+            "results_public/candidates.csv",
+        ),
+        (
+            "https://raw.githubusercontent.com/eumemic/exoplanets/main/results_public/candidates_allsky.csv",
+            "results_public/candidates_allsky.csv",
+        ),
+    ]
+
+    async with httpx.AsyncClient(timeout=45.0) as client:
+        for url, source_file in urls:
+            try:
+                resp = await client.get(url)
+                if resp.status_code == 200:
+                    records = ingest.parse_candidates_csv(resp.text)
+                    count = await ingest.ingest_candidates(
+                        records, commit_sha="eumemic-main", source_file=source_file
+                    )
+                    total_ingested += count
+                else:
+                    logger.warning(f"HTTP {resp.status_code} fetching {url}")
+            except Exception as e:
+                logger.warning(f"Failed to fetch and ingest {url}: {e}")
+
+    return total_ingested
+
