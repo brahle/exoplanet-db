@@ -289,11 +289,11 @@ class IngestionRunner:
             sig_res = await self.session.execute(sig_stmt)
             existing_signals = sig_res.scalars().all()
 
-            matched_signal: Signal | None = None
-            for es in existing_signals:
-                if es.display_name == toidisplay:
-                    matched_signal = es
-                    break
+            # Exact designation first, so an ephemeris match on another signal can't win
+            matched_signal: Signal | None = next(
+                (es for es in existing_signals if es.display_name == toidisplay), None
+            )
+            for es in [] if matched_signal else existing_signals:
                 if period > 0 and es.primary_period_d > 0:
                     match_res = check_signal_match(
                         period1_d=es.primary_period_d,
@@ -343,6 +343,17 @@ class IngestionRunner:
                 # TFOPWG outranks community classifications, never a NASA confirmation
                 if matched_signal.current_disposition != "confirmed_planet" and tfopwg in disp_map:
                     matched_signal.current_disposition = disposition
+                # Naming precedence: NASA planet name > TOI > community (CTOI, eumemic, dossier)
+                has_nasa_name = (
+                    await self.session.execute(
+                        select(Report.id).where(
+                            Report.signal_id == matched_signal.id,
+                            Report.source_name == "nasa_pscomppars",
+                        )
+                    )
+                ).first()
+                if not has_nasa_name:
+                    matched_signal.display_name = toidisplay
 
             # 3. Report
             report = Report(
