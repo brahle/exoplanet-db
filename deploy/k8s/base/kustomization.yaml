@@ -14,4 +14,5 @@ resources:
 
 images:
   - name: harbor.brahle.com/library/exoplanet-db
-    newTag: v0.1.0
+    newTag: v0.1.1
+

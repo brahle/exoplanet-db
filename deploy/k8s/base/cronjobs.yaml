@@ -29,10 +29,10 @@ spec:
             fsGroup: 10001
           containers:
             - name: ingest
-              image: harbor.brahle.com/library/exoplanet-db:v0.1.0
+              image: harbor.brahle.com/library/exoplanet-db:v0.1.1
               imagePullPolicy: IfNotPresent
               command:
-                - /app/.venv/bin/python
+                - python
                 - -m
                 - exoplanet_db.ingest.nasa_tap
               env:
