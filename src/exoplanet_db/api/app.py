@@ -18,6 +18,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import BaseModel, Field
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from exoplanet_db.ingest.nasa_tap import NASA_ACKNOWLEDGEMENT
@@ -132,6 +133,24 @@ ATTRIBUTION_METADATA = {
     "community_data_license": "CC BY 4.0 (Creative Commons Attribution 4.0 International)",
     "code_license": "MIT",
 }
+
+
+def primary_source_name(signal: Any) -> str:
+    """Source of the signal's preferred ephemeris, else its most recent report.
+
+    Only reads relationships that are already loaded (async sessions cannot lazy-load).
+    """
+    unloaded = sa_inspect(signal).unloaded
+    reports = [] if "reports" in unloaded else list(signal.reports or [])
+    if not reports:
+        return resolve_source_name(signal)
+    fits = {} if "ephemeris_fits" in unloaded else {f.id: f for f in signal.ephemeris_fits or []}
+    preferred = fits.get(signal.preferred_ephemeris_fit_id)
+    if preferred is not None:
+        for r in reports:
+            if r.id == preferred.report_id:
+                return r.source_name
+    return max(reports, key=lambda r: r.retrieval_utc).source_name
 
 
 def resolve_source_name(signal: Any) -> str:
@@ -282,7 +301,21 @@ class ObservationQueueResponse(BaseModel):
     attribution: dict[str, str] = Field(default_factory=lambda: ATTRIBUTION_METADATA)
 
 
+class SourceStats(BaseModel):
+    source_name: str
+    signals: int = Field(description="Distinct signals with at least one report from this source")
+    reports: int
+    last_ingested_utc: datetime | None = None
+
+
 class CatalogStatsResponse(BaseModel):
+    sources: list[SourceStats] = Field(default_factory=list)
+    confirmed_in_nasa_archive: int = Field(
+        0, description="Confirmed planets with a row in the NASA Exoplanet Archive composite table"
+    )
+    confirmed_tess_discoveries: int = Field(
+        0, description="Of those, planets whose discovery facility is TESS"
+    )
     total_signals: int
     confirmed_planets: int
     planet_candidates: int
@@ -398,7 +431,10 @@ async def get_system(
 @app.get("/v1/candidates", response_model=PaginatedResponse, tags=["Catalog"])
 async def list_candidates(
     search: str | None = Query(None, description="Search by candidate name, target name, TIC ID, or Gaia ID"),
-    source: str | None = Query(None, description="Filter by data source (e.g. nasa_pscomppars, git:brahle/exoplanet-candidates)"),
+    source: str | None = Query(
+        None,
+        description="Filter by data source: nasa_pscomppars, nasa_toi, exofop_ctoi, eumemic/exoplanets, git:brahle/exoplanet-candidates",
+    ),
     disposition: str | None = Query(None, description="Filter by scientific disposition"),
     min_period_d: float | None = Query(None, ge=0.0),
     max_period_d: float | None = Query(None, ge=0.0),
@@ -425,7 +461,7 @@ async def list_candidates(
             target_id=s.target_id,
             target_name=s.target.primary_name if s.target else None,
             tic_id=s.target.tic_id if s.target else None,
-            source_name=resolve_source_name(s),
+            source_name=primary_source_name(s),
             display_name=s.display_name,
             period_d=s.primary_period_d,
             period_err_d=s.primary_period_err_d,

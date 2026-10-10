@@ -90,3 +90,34 @@ def test_signal_matching_harmonic_alias():
     )
     assert result["match_type"] == "harmonic_alias"
     assert result["harmonic_ratio"] == pytest.approx(2.0, rel=1e-3)
+
+
+def test_same_period_signal_matches_one_and_refuses_ambiguity():
+    from types import SimpleNamespace
+
+    from exoplanet_db.services.reconciliation import match_signal_to_existing, same_period_signal
+
+    a = SimpleNamespace(
+        primary_period_d=3.0,
+        primary_epoch_bjd=2459000.0,
+        primary_period_err_d=None,
+        primary_duration_h=2.0,
+    )
+    b = SimpleNamespace(
+        primary_period_d=7.0,
+        primary_epoch_bjd=2459000.0,
+        primary_period_err_d=None,
+        primary_duration_h=2.0,
+    )
+    unknown = SimpleNamespace(
+        primary_period_d=0.0,
+        primary_epoch_bjd=0.0,
+        primary_period_err_d=None,
+        primary_duration_h=None,
+    )
+    assert same_period_signal([a, b], 3.0005) is a
+    assert same_period_signal([a, b], 3.1) is None
+    assert same_period_signal([a, SimpleNamespace(**{**a.__dict__})], 3.0) is None
+    # Period-0 signals are skipped instead of dividing by zero; the epoch mismatch falls back to period
+    assert match_signal_to_existing([unknown, a], 3.0001, 2459500.123) is a
+    assert match_signal_to_existing([unknown], 3.0, 2459000.0) is None

@@ -125,6 +125,28 @@ def check_signal_match(
     }
 
 
+SAME_PERIOD_REL_TOL = 1e-3
+
+
+def same_period_signal(existing_signals: list[Any], period: float | None) -> Any | None:
+    """The single signal on this star whose period agrees to 0.1%, if exactly one does.
+
+    Catalogues often quote different reference epochs for the same planet, so a strict
+    ephemeris comparison can miss it; on one star, a near-identical period is the same
+    signal. Ambiguous cases (two signals within tolerance) return None.
+    """
+    if not period or period <= 0:
+        return None
+    hits = [
+        s
+        for s in existing_signals
+        if s.primary_period_d
+        and s.primary_period_d > 0
+        and abs(s.primary_period_d - period) / period < SAME_PERIOD_REL_TOL
+    ]
+    return hits[0] if len(hits) == 1 else None
+
+
 def match_signal_to_existing(
     existing_signals: list[Any],
     cand_period: float,
@@ -138,8 +160,11 @@ def match_signal_to_existing(
     within 3-sigma Mahalanobis distance and phase overlap criteria.
     """
     for s in existing_signals:
-        if s.primary_period_d is None or s.primary_epoch_bjd is None:
+        # Period 0 means "unknown" (single transits, imaging); nothing to compare against
+        if not s.primary_period_d or s.primary_period_d <= 0 or s.primary_epoch_bjd is None:
             continue
+        if not cand_period or cand_period <= 0:
+            return None
         res = check_signal_match(
             period1_d=s.primary_period_d,
             period1_err=s.primary_period_err_d,
@@ -154,4 +179,4 @@ def match_signal_to_existing(
         )
         if res.get("match_type") == "identical_signal":
             return s
-    return None
+    return same_period_signal(existing_signals, cand_period)

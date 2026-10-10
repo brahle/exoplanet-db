@@ -1,68 +1,58 @@
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from exoplanet_db.ingest.exofop import ExoFOPIngest
-from exoplanet_db.models import Base, EphemerisFit, Report, Signal, Target
+from exoplanet_db.models.base import Base
+from exoplanet_db.models.entities import Report, Signal, Target
+
+# Subset of the columns in exofop.ipac.caltech.edu/tess/download_ctoi.php?output=csv
+CTOI_CSV = """TIC ID,CTOI,Promoted to TOI,User Disposition,TFOPWG Disposition,TESS Mag,RA,Dec,Transit Epoch (BJD),Transit Epoch (BJD) err,Period (days),Period (days) Error,Depth ppm,Duration (hrs),Stellar Eff Temp (K),Stellar Radius (R_Sun),User,Notes
+2050290974,2050290974.01,,PC,,10.2,346.183564,68.515204,2458755.0947,0.002,19.05118,0.0001,4413,0.266,5200,0.9,someone,
+23456789,23456789.01,1234.01,PC,FP,9.8,10.5,-20.25,2458600.5,,3.5,,1200,2.1,,,observer2,eclipsing
+23456789,23456789.02,,PC,,9.8,10.5,-20.25,,,,,,,,,observer2,single transit
+"""
+
+
+def test_parse_real_ctoi_columns():
+    recs = ExoFOPIngest(None).parse_ctoi_csv(CTOI_CSV)
+    assert [r["ctoi_id"] for r in recs] == [
+        "CTOI 2050290974.01",
+        "CTOI 23456789.01",
+        "CTOI 23456789.02",
+    ]
+    a, b, c = recs
+    assert a["period_d"] == 19.05118 and a["epoch_bjd"] == pytest.approx(2458755.0947)
+    assert a["depth_ppm"] == 4413 and a["ra_deg"] == pytest.approx(346.183564)
+    assert a["disposition"] == "planet_candidate" and a["user"] == "someone"
+    assert b["disposition"] == "false_positive" and b["reported"] == "FP"  # TFOPWG wins
+    assert b["promoted_toi"] == "1234.01"
+    assert c["period_d"] is None and c["epoch_bjd"] is None  # kept, not invented
 
 
 @pytest.mark.asyncio
-async def test_exofop_ctoi_ingest():
+async def test_ctoi_ingest_idempotent_and_keeps_unperiodic_rows():
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    recs = ExoFOPIngest(None).parse_ctoi_csv(CTOI_CSV)
+    for _ in range(2):
+        async with factory() as session:
+            assert await ExoFOPIngest(session).ingest_ctois(recs) == 3
 
-    session_factory = async_sessionmaker(engine, expire_on_commit=False)
-
-    sample_ctoi_csv = """CTOI,TIC ID,Period (days),Epoch (BJD),Depth (ppm),Duration (hours),RA,Dec,User,Notes
-CTOI-1234.01,23456789,4.5678,2458600.5,1200,3.2,120.5,30.2,Observer Alice,High SNR transit
-CTOI-5678.01,98765432,1.2345,1600.0,2500,1.8,60.0,-45.0,Observer Bob,V-shaped candidate
-"""
-
-    async with session_factory() as session:
-        adapter = ExoFOPIngest(session)
-        records = adapter.parse_ctoi_csv(sample_ctoi_csv)
-        assert len(records) == 2
-        assert records[0]["ctoi_id"] == "CTOI-1234.01"
-        assert records[0]["tic"] == "23456789"
-        assert abs(records[0]["epoch_bjd"] - 2458600.5) < 1e-4
-
-        # Check BTJD conversion in row 2: 1600.0 -> 2458600.0
-        assert abs(records[1]["epoch_bjd"] - 2458600.0) < 1e-4
-
-        count = await adapter.ingest_ctois(records)
-        assert count == 2
-
-    async with session_factory() as session:
-        # Check Target
-        t_res = await session.execute(select(Target).where(Target.tic_id == "23456789"))
-        target = t_res.scalars().first()
-        assert target is not None
-        assert target.primary_name == "TIC 23456789"
-
-        # Check Signal
-        sig_res = await session.execute(select(Signal).where(Signal.target_id == target.id))
-        sig = sig_res.scalars().first()
-        assert sig is not None
-        assert sig.display_name == "CTOI-1234.01"
-        assert sig.current_disposition == "planet_candidate"
-        assert any("exofop_ctoi:CTOI-1234.01" in lim for lim in sig.scientific_limits)
-
-        # Check Report
-        rep_res = await session.execute(select(Report).where(Report.signal_id == sig.id))
-        rep = rep_res.scalars().first()
-        assert rep is not None
-        assert rep.source_name == "exofop_ctoi"
-        assert rep.author_or_team == "Observer Alice"
-
-        # Check EphemerisFit
-        fit_res = await session.execute(
-            select(EphemerisFit).where(EphemerisFit.signal_id == sig.id)
-        )
-        fit = fit_res.scalars().first()
-        assert fit is not None
-        assert fit.fit_model == "exofop_ctoi_linear"
-
+    async with factory() as session:
+        assert (await session.execute(select(func.count(Report.id)))).scalar() == 3
+        assert (await session.execute(select(func.count(Signal.id)))).scalar() == 3
+        target = (
+            await session.execute(select(Target).where(Target.tic_id == "23456789"))
+        ).scalar_one()
+        assert (target.ra_deg, target.dec_deg) == (10.5, -20.25)
+        single = (
+            await session.execute(select(Signal).where(Signal.display_name == "CTOI 23456789.02"))
+        ).scalar_one()
+        assert single.primary_period_d == 0.0
+        assert any("No period" in lim for lim in single.scientific_limits)
     await engine.dispose()

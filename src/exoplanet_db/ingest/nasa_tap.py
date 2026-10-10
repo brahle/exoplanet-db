@@ -62,6 +62,7 @@ class NasaTapClient:
             "sy_pnum",
             "discoverymethod",
             "disc_year",
+            "disc_facility",
             "pl_orbper",
             "pl_orbpererr1",
             "pl_orbpererr2",
@@ -152,11 +153,25 @@ class NasaTapClient:
         return await self.execute_query(query)
 
 
-async def run_ingest(source: str = "all", limit: int | None = None) -> None:
+SOURCES = ("composite", "toi", "eumemic", "ctoi", "dossiers")
+SOURCE_GROUPS = {"all": SOURCES, "nasa": ("composite", "toi")}
+
+
+async def run_ingest(source: str = "all", limit: int | None = None) -> list[str]:
+    """Ingests the selected sources, then fills TIC coordinates/stellar data.
+
+    Every source runs even if an earlier one fails; returns the names of failed sources.
+    Order matters: NASA tables first, so community candidates reconcile against them.
+    """
     import os
+
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-    from exoplanet_db.ingest.runner import IngestionRunner
+
+    from exoplanet_db.ingest.common import enrich_tic_targets
     from exoplanet_db.ingest.eumemic import fetch_and_ingest_eumemic
+    from exoplanet_db.ingest.exofop import fetch_and_ingest_ctois
+    from exoplanet_db.ingest.git_dossier import fetch_and_ingest_github_dossiers
+    from exoplanet_db.ingest.runner import IngestionRunner
 
     db_url = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///exoplanet_db.sqlite")
     if db_url.startswith("postgres://"):
@@ -167,43 +182,71 @@ async def run_ingest(source: str = "all", limit: int | None = None) -> None:
     engine = create_async_engine(db_url, echo=False)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     client = NasaTapClient()
+    selected = SOURCE_GROUPS.get(source, (source,))
+
+    async def composite(session):
+        rows = await client.fetch_composite_planets(limit=limit)
+        snap = await IngestionRunner(session).ingest_nasa_composite(rows)
+        return f"{len(rows)} rows fetched, {snap.record_count} ingested"
+
+    async def toi(session):
+        rows = await client.fetch_toi_candidates(limit=limit)
+        snap = await IngestionRunner(session).ingest_nasa_toi(rows)
+        return f"{len(rows)} rows fetched, {snap.record_count} ingested"
+
+    async def eumemic(session):
+        return f"{await fetch_and_ingest_eumemic(session)} published candidates"
+
+    async def ctoi(session):
+        return f"{await fetch_and_ingest_ctois(session)} CTOIs"
+
+    async def dossiers(session):
+        return f"{await fetch_and_ingest_github_dossiers(session)} dossiers"
+
+    steps = {
+        "composite": composite,
+        "toi": toi,
+        "eumemic": eumemic,
+        "ctoi": ctoi,
+        "dossiers": dossiers,
+    }
+    failed: list[str] = []
+    for name in selected:
+        print(f"[{name}] ingesting...", flush=True)
+        async with session_factory() as session:
+            try:
+                print(f"[{name}] {await steps[name](session)}", flush=True)
+            except Exception as exc:  # keep going; report at the end
+                await session.rollback()
+                failed.append(name)
+                print(f"[{name}] FAILED: {exc!r}", flush=True)
 
     async with session_factory() as session:
-        runner = IngestionRunner(session)
-
-        # 1. Composite planets
-        if source in ("all", "composite", "nasa"):
-            print("Fetching composite planets from NASA TAP (pscomppars)...")
-            planets = await client.fetch_composite_planets(limit=limit)
-            print(f"Fetched {len(planets)} planets from NASA TAP. Ingesting into database...")
-            snap1 = await runner.ingest_nasa_composite(planets)
-            print(f"Ingested {snap1.record_count} confirmed planet records. Snapshot ID: {snap1.id}")
-
-        # 2. TOI candidates
-        if source in ("all", "toi", "nasa"):
-            print("Fetching TESS candidate planets from NASA TAP (toi)...")
-            tois = await client.fetch_toi_candidates(limit=limit)
-            print(f"Fetched {len(tois)} TOIs from NASA TAP. Ingesting into database...")
-            snap2 = await runner.ingest_nasa_toi(tois)
-            print(f"Ingested {snap2.record_count} TOI records. Snapshot ID: {snap2.id}")
-
-        # 3. eumemic/exoplanets
-        if source in ("all", "eumemic"):
-            print("Fetching community candidates from eumemic/exoplanets...")
-            eumemic_count = await fetch_and_ingest_eumemic(session)
-            print(f"Ingested {eumemic_count} candidate records from eumemic/exoplanets.")
+        try:
+            print(f"[tic] enriched {await enrich_tic_targets(session)} targets", flush=True)
+        except Exception as exc:
+            failed.append("tic")
+            print(f"[tic] FAILED: {exc!r}", flush=True)
 
     await engine.dispose()
+    return failed
 
 
-if __name__ == "__main__":
+def main() -> None:
     import argparse
     import asyncio
+    import sys
 
     parser = argparse.ArgumentParser(description="Exoplanet DB Ingestion Runner")
-    parser.add_argument("--source", default="all", choices=["all", "nasa", "composite", "toi", "eumemic"])
+    parser.add_argument("--source", default="all", choices=["all", "nasa", *SOURCES])
     parser.add_argument("--limit", type=int, default=None, help="Row limit for testing")
     args = parser.parse_args()
 
-    asyncio.run(run_ingest(source=args.source, limit=args.limit))
+    failures = asyncio.run(run_ingest(source=args.source, limit=args.limit))
+    if failures:
+        print(f"Ingest finished with failures: {', '.join(failures)}", flush=True)
+        sys.exit(1)
 
+
+if __name__ == "__main__":
+    main()

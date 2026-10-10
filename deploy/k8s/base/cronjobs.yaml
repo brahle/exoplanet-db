@@ -13,7 +13,7 @@ spec:
   jobTemplate:
     spec:
       backoffLimit: 2
-      activeDeadlineSeconds: 1800
+      activeDeadlineSeconds: 3600
       template:
         metadata:
           labels:
@@ -29,7 +29,7 @@ spec:
             fsGroup: 10001
           containers:
             - name: ingest
-              image: harbor.brahle.com/library/exoplanet-db:v0.1.12
+              image: harbor.brahle.com/library/exoplanet-db:v0.1.13
               imagePullPolicy: IfNotPresent
               command:
                 - python

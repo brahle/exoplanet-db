@@ -650,6 +650,70 @@ footer {
   text-decoration: underline;
 }
 
+.stat-sub {
+  font-size: 0.6875rem;
+  color: var(--text-muted);
+  margin-top: 0.125rem;
+}
+
+/* ---------- Source strip ---------- */
+.source-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin: -0.5rem 0 1.5rem;
+}
+
+.source-strip-title {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-right: 0.25rem;
+}
+
+.source-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0.5rem 0.25rem 0.25rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  font-size: 0.8125rem;
+}
+
+.source-chip button {
+  font: inherit;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 0;
+  padding: 0.125rem 0.25rem;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.source-chip button:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.source-chip strong {
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.source-chip-when {
+  font-size: 0.6875rem;
+  color: var(--text-muted);
+}
+
+.source-chip-link {
+  color: var(--accent-cyan);
+  text-decoration: none;
+}
+
 /* ---------- Candidate detail ---------- */
 .detail-loading {
   text-align: center;

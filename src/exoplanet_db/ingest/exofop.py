@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from exoplanet_db.ingest.common import upsert_fit, upsert_report
 from exoplanet_db.models import (
     EphemerisFit,
     PublishedSnapshot,
@@ -36,57 +37,55 @@ class ExoFOPIngest:
         self.session = session
 
     def parse_ctoi_csv(self, csv_text: str) -> list[dict[str, Any]]:
-        """Parses ExoFOP CTOI CSV table into structured dictionaries."""
-        reader = csv.DictReader(io.StringIO(csv_text.strip()))
+        """Parses the ExoFOP CTOI export (download_ctoi.php?output=csv)."""
+
+        def num(row: dict[str, str], *keys: str) -> float | None:
+            for k in keys:
+                v = (row.get(k) or "").strip()
+                if v:
+                    try:
+                        return float(v)
+                    except ValueError:
+                        return None
+            return None
+
         records = []
-        for row in reader:
-            # Handle varied headers in ExoFOP exports
-            ctoi_id = (row.get("ctoi") or row.get("CTOI") or row.get("Identifier") or "").strip()
-            tic = (
-                row.get("tic_id") or row.get("TIC ID") or row.get("TIC") or row.get("tid") or ""
-            ).strip()
-            period_str = (
-                row.get("period") or row.get("Period (days)") or row.get("Period") or ""
-            ).strip()
-            epoch_str = (
-                row.get("epoch")
-                or row.get("Epoch (BJD)")
-                or row.get("Epoch")
-                or row.get("Midpoint")
-                or ""
-            ).strip()
-
-            if not tic or not period_str or not epoch_str:
+        for row in csv.DictReader(io.StringIO(csv_text.strip())):
+            tic = (row.get("TIC ID") or row.get("tic_id") or row.get("TIC") or "").strip()
+            ctoi = (row.get("CTOI") or row.get("ctoi") or "").strip()
+            if not tic or not ctoi:
                 continue
-
-            try:
-                period = float(period_str)
-                epoch_raw = float(epoch_str)
-                epoch_bjd = epoch_raw if epoch_raw > 2400000 else epoch_raw + 2457000.0
-                depth_ppm = float(row.get("Depth (ppm)") or row.get("depth") or 1000.0)
-                duration_h = float(row.get("Duration (hours)") or row.get("duration") or 2.5)
-                ra_deg = float(row.get("RA") or row.get("ra") or 0.0)
-                dec_deg = float(row.get("Dec") or row.get("dec") or 0.0)
-                user = row.get("User") or row.get("user") or "Community Observer"
-                notes = row.get("Notes") or row.get("notes") or ""
-
-                records.append(
-                    {
-                        "ctoi_id": ctoi_id or f"CTOI-{tic}.01",
-                        "tic": tic,
-                        "period_d": period,
-                        "epoch_bjd": epoch_bjd,
-                        "depth_ppm": depth_ppm,
-                        "duration_h": duration_h,
-                        "ra_deg": ra_deg,
-                        "dec_deg": dec_deg,
-                        "user": user,
-                        "notes": notes,
-                        "raw": dict(row),
-                    }
-                )
-            except (ValueError, TypeError):
-                continue
+            epoch = num(row, "Transit Epoch (BJD)", "Epoch (BJD)", "epoch")
+            if epoch is not None and epoch < 2400000:
+                epoch += 2457000.0
+            tfop = (row.get("TFOPWG Disposition") or "").strip().upper()
+            user_disp = (row.get("User Disposition") or "").strip().upper()
+            disp = tfop or user_disp
+            records.append(
+                {
+                    "ctoi_id": f"CTOI {ctoi}",
+                    "tic": tic,
+                    "period_d": num(row, "Period (days)", "period"),
+                    "period_err_d": num(row, "Period (days) Error"),
+                    "epoch_bjd": epoch,
+                    "epoch_err_d": num(row, "Transit Epoch (BJD) err"),
+                    "depth_ppm": num(row, "Depth ppm", "Depth (ppm)", "depth"),
+                    "duration_h": num(row, "Duration (hrs)", "Duration (hours)", "duration"),
+                    "ra_deg": num(row, "RA", "ra"),
+                    "dec_deg": num(row, "Dec", "dec"),
+                    "teff_k": num(row, "Stellar Eff Temp (K)"),
+                    "radius_rsun": num(row, "Stellar Radius (R_Sun)"),
+                    "tess_mag": num(row, "TESS Mag"),
+                    # A community user's CP claim stays on the report; it never confirms the signal.
+                    "disposition": "false_positive" if disp in ("FP", "FA") else "planet_candidate",
+                    "reported": disp or "PC",
+                    "promoted_toi": (row.get("Promoted to TOI") or "").strip() or None,
+                    "user": (row.get("User") or row.get("user") or "").strip()
+                    or "ExoFOP community",
+                    "notes": (row.get("Notes") or "").strip(),
+                    "raw": dict(row),
+                }
+            )
         return records
 
     async def ingest_ctois(
@@ -112,42 +111,58 @@ class ExoFOPIngest:
                 target = Target(
                     primary_name=target_name,
                     tic_id=tic,
-                    ra_deg=r["ra_deg"],
-                    dec_deg=r["dec_deg"],
-                    epoch=2000.0,
+                    ra_deg=r["ra_deg"] if r["ra_deg"] is not None else 0.0,
+                    dec_deg=r["dec_deg"] if r["dec_deg"] is not None else 0.0,
+                    teff_k=r["teff_k"],
+                    radius_rsun=r["radius_rsun"],
+                    tess_mag=r["tess_mag"],
                     aliases=[f"TIC {tic}"],
                 )
                 self.session.add(target)
                 await self.session.flush()
 
-            # Signal matching
-            signals_stmt = select(Signal).where(Signal.target_id == target.id)
-            existing_signals = list((await self.session.execute(signals_stmt)).scalars().all())
-
-            matched_signal = match_signal_to_existing(
-                existing_signals=existing_signals,
-                cand_period=r["period_d"],
-                cand_epoch=r["epoch_bjd"],
-                duration_h=r["duration_h"],
+            period = r["period_d"] or 0.0
+            epoch = r["epoch_bjd"] or 0.0
+            existing_signals = list(
+                (
+                    await self.session.execute(select(Signal).where(Signal.target_id == target.id))
+                ).scalars()
             )
+            matched_signal = next(
+                (s for s in existing_signals if s.display_name == r["ctoi_id"]), None
+            )
+            if matched_signal is None and period > 0 and epoch > 0:
+                matched_signal = match_signal_to_existing(
+                    existing_signals=existing_signals,
+                    cand_period=period,
+                    cand_epoch=epoch,
+                    period_err=r["period_err_d"],
+                    epoch_err=r["epoch_err_d"],
+                    duration_h=r["duration_h"],
+                )
 
-            limits = [
-                f"exofop_ctoi:{r['ctoi_id']}",
-                f"observer:{r['user']}",
-            ]
+            limits = [f"ExoFOP community TOI {r['ctoi_id']} submitted by {r['user']}"]
+            if r["promoted_toi"]:
+                limits.append(f"Promoted to TOI {r['promoted_toi']}")
+            if not period:
+                limits.append("No period published (single transit or unconstrained)")
 
             if matched_signal:
                 signal = matched_signal
-                signal.scientific_limits = list(set((signal.scientific_limits or []) + limits))
+                signal.scientific_limits = list(
+                    dict.fromkeys((signal.scientific_limits or []) + limits)
+                )
             else:
                 signal = Signal(
                     target_id=target.id,
                     display_name=r["ctoi_id"],
-                    primary_period_d=r["period_d"],
-                    primary_epoch_bjd=r["epoch_bjd"],
+                    primary_period_d=period,
+                    primary_period_err_d=r["period_err_d"],
+                    primary_epoch_bjd=epoch,
+                    primary_epoch_err_d=r["epoch_err_d"],
                     primary_duration_h=r["duration_h"],
                     primary_depth_ppm=r["depth_ppm"],
-                    current_disposition="planet_candidate",
+                    current_disposition=r["disposition"],
                     source_localisation_status="unresolved",
                     timing_consistency_status="unresolved",
                     scientific_limits=limits,
@@ -155,39 +170,44 @@ class ExoFOPIngest:
                 self.session.add(signal)
                 await self.session.flush()
 
-            # Report record
-            report = Report(
-                target_id=target.id,
-                signal_id=signal.id,
-                source_name="exofop_ctoi",
-                source_key=r["ctoi_id"],
-                retrieval_utc=now,
-                author_or_team=r["user"],
-                bibcode_or_url=f"https://exofop.ipac.caltech.edu/tess/target.php?id={tic}",
-                reported_disposition="planet_candidate",
-                period_d=r["period_d"],
-                epoch_bjd=r["epoch_bjd"],
-                duration_h=r["duration_h"],
-                depth_ppm=r["depth_ppm"],
-                raw_payload=r["raw"],
-                license="ExoFOP Open Access / Community Contribution",
+            report = await upsert_report(
+                self.session,
+                Report(
+                    target_id=target.id,
+                    signal_id=signal.id,
+                    source_name="exofop_ctoi",
+                    source_key=r["ctoi_id"],
+                    retrieval_utc=now,
+                    author_or_team=r["user"],
+                    bibcode_or_url=f"https://exofop.ipac.caltech.edu/tess/target.php?id={tic}",
+                    reported_disposition=r["reported"],
+                    period_d=r["period_d"],
+                    period_err_d=r["period_err_d"],
+                    epoch_bjd=r["epoch_bjd"],
+                    epoch_err_d=r["epoch_err_d"],
+                    duration_h=r["duration_h"],
+                    depth_ppm=r["depth_ppm"],
+                    raw_payload=r["raw"],
+                    license="ExoFOP Open Access / Community Contribution",
+                ),
             )
-            self.session.add(report)
-            await self.session.flush()
-
-            # EphemerisFit
-            ephem_fit = EphemerisFit(
-                report_id=report.id,
-                signal_id=signal.id,
-                period_d=r["period_d"],
-                epoch_bjd_tdb=r["epoch_bjd"],
-                duration_h=r["duration_h"],
-                depth_ppm=r["depth_ppm"],
-                time_scale="TDB",
-                fit_model="exofop_ctoi_linear",
-                is_coherent=True,
-            )
-            self.session.add(ephem_fit)
+            if period > 0 and epoch > 2400000:
+                await upsert_fit(
+                    self.session,
+                    EphemerisFit(
+                        report_id=report.id,
+                        signal_id=signal.id,
+                        period_d=period,
+                        period_err_d=r["period_err_d"],
+                        epoch_bjd_tdb=epoch,
+                        epoch_err_d=r["epoch_err_d"],
+                        duration_h=r["duration_h"],
+                        depth_ppm=r["depth_ppm"],
+                        time_scale="TDB",
+                        fit_model="exofop_ctoi_linear",
+                        is_coherent=True,
+                    ),
+                )
             count += 1
 
         # PublishedSnapshot
@@ -205,3 +225,17 @@ class ExoFOPIngest:
         self.session.add(snapshot)
         await self.session.commit()
         return count
+
+
+EXOFOP_CTOI_URL = "https://exofop.ipac.caltech.edu/tess/download_ctoi.php?sort=ctoi&output=csv"
+
+
+async def fetch_and_ingest_ctois(session: AsyncSession) -> int:
+    """Downloads the full ExoFOP CTOI table and ingests every row."""
+    import httpx
+
+    async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
+        resp = await client.get(EXOFOP_CTOI_URL)
+        resp.raise_for_status()
+    ingest = ExoFOPIngest(session)
+    return await ingest.ingest_ctois(ingest.parse_ctoi_csv(resp.text))

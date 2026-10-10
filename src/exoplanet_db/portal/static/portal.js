@@ -143,6 +143,62 @@ function handleRoute() {
 // --- Candidates Catalog ---
 let currentQueryId = 0;
 
+const SOURCE_LABELS = {
+  nasa_pscomppars: ['NASA Exoplanet Archive', 'confirmed planets', 'https://exoplanetarchive.ipac.caltech.edu/'],
+  nasa_toi: ['NASA Exoplanet Archive', 'TESS Objects of Interest', 'https://exoplanetarchive.ipac.caltech.edu/cgi-bin/TblView/nph-tblView?app=ExoTbls&config=TOI'],
+  exofop_ctoi: ['ExoFOP-TESS', 'community TOIs', 'https://exofop.ipac.caltech.edu/tess/view_ctoi.php'],
+  'eumemic/exoplanets': ['eumemic/exoplanets', 'TESS candidates', 'https://github.com/eumemic/exoplanets'],
+  'git:brahle/exoplanet-candidates': ['brahle/exoplanet-candidates', 'evidence dossiers', 'https://github.com/brahle/exoplanet-candidates'],
+};
+
+function renderSourceStrip(sources) {
+  const strip = document.getElementById('source-strip');
+  if (!strip) return;
+  strip.replaceChildren();
+  const title = document.createElement('span');
+  title.className = 'source-strip-title';
+  title.textContent = 'Sources';
+  strip.appendChild(title);
+  for (const src of sources) {
+    const [name, what, home] = SOURCE_LABELS[src.source_name] || [src.source_name, '', null];
+    const item = document.createElement('span');
+    item.className = 'source-chip';
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.title = `Show the ${src.signals.toLocaleString()} signals reported by ${name}${what ? ' (' + what + ')' : ''}`;
+    const strong = document.createElement('strong');
+    strong.textContent = src.signals.toLocaleString();
+    btn.append(strong, ` ${name}${what ? ' · ' + what : ''}`);
+    btn.addEventListener('click', () => {
+      const select = document.getElementById('source-filter');
+      if (!select) return;
+      if (![...select.options].some((o) => o.value === src.source_name)) {
+        select.add(new Option(name, src.source_name));
+      }
+      select.value = src.source_name;
+      select.dispatchEvent(new Event('change'));
+    });
+    item.appendChild(btn);
+    if (src.last_ingested_utc) {
+      const when = document.createElement('span');
+      when.className = 'source-chip-when';
+      when.textContent = `updated ${src.last_ingested_utc.slice(0, 10)}`;
+      item.appendChild(when);
+    }
+    if (home) {
+      const link = document.createElement('a');
+      link.href = home;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      link.className = 'source-chip-link';
+      link.title = `Open ${name}`;
+      link.textContent = '↗';
+      item.appendChild(link);
+    }
+    strip.appendChild(item);
+  }
+}
+
 async function loadCatalogStats() {
   try {
     const res = await fetch('/v1/stats');
@@ -158,6 +214,17 @@ async function loadCatalogStats() {
     if (confirmedEl) confirmedEl.textContent = Number(stats.confirmed_planets).toLocaleString();
     if (candidatesEl) candidatesEl.textContent = Number(stats.candidates_total).toLocaleString();
     if (targetsEl) targetsEl.textContent = Number(stats.total_targets).toLocaleString();
+    renderSourceStrip(stats.sources || []);
+    const breakdown = document.getElementById('stat-confirmed-breakdown');
+    if (breakdown) {
+      const extra = stats.confirmed_planets - stats.confirmed_in_nasa_archive;
+      breakdown.textContent =
+        `${Number(stats.confirmed_in_nasa_archive).toLocaleString()} in NASA archive` +
+        (extra > 0 ? ` + ${extra.toLocaleString()} TFOPWG-confirmed` : '') +
+        ` · ${Number(stats.confirmed_tess_discoveries).toLocaleString()} TESS discoveries`;
+      breakdown.title =
+        'NASA Exoplanet Archive composite table, plus TOIs that TFOPWG marks confirmed (CP/KP) but the archive has not listed yet.';
+    }
   } catch (err) {
     console.warn('Failed to load stats:', err);
   }

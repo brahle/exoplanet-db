@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import String, func, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
 
@@ -123,26 +123,10 @@ class CatalogService:
             count_query = count_query.where(search_cond)
 
         if source:
-            if source == "nasa_pscomppars":
-                cond = (
-                    Signal.current_disposition == "confirmed_planet"
-                ) & ~Signal.scientific_limits.cast(String).ilike("%TOI%")
-                query = query.where(cond)
-                count_query = count_query.where(cond)
-            elif source == "nasa_toi":
-                cond = Signal.scientific_limits.cast(String).ilike("%TOI%")
-                query = query.where(cond)
-                count_query = count_query.where(cond)
-            elif "eumemic" in source:
-                cond = Signal.scientific_limits.cast(String).ilike("%eumemic%")
-                query = query.where(cond)
-                count_query = count_query.where(cond)
-            elif "git" in source:
-                cond = Signal.scientific_limits.cast(String).ilike(
-                    "%checked catalogues%"
-                ) | Signal.scientific_limits.cast(String).ilike("%Conditional diagnostic%")
-                query = query.where(cond)
-                count_query = count_query.where(cond)
+            # Filter on the report rows that actually came from the source
+            cond = Signal.id.in_(select(Report.signal_id).where(Report.source_name == source))
+            query = query.where(cond)
+            count_query = count_query.where(cond)
 
         if disposition:
             query = query.where(Signal.current_disposition == disposition)
@@ -453,7 +437,57 @@ class CatalogService:
         candidates_total = planet_candidates + unclassified_signals
         false_positives = disp_counts.get("false_positive", 0)
 
+        source_rows = (
+            await self.session.execute(
+                select(
+                    Report.source_name,
+                    func.count(func.distinct(Report.signal_id)),
+                    func.count(Report.id),
+                ).group_by(Report.source_name)
+            )
+        ).all()
+        snapshot_rows = (
+            await self.session.execute(
+                select(PublishedSnapshot.source_name, func.max(PublishedSnapshot.snapshot_utc)).group_by(
+                    PublishedSnapshot.source_name
+                )
+            )
+        ).all()
+        last_snapshot = {name: ts for name, ts in snapshot_rows}
+        sources = sorted(
+            (
+                {
+                    "source_name": name,
+                    "signals": n_signals,
+                    "reports": n_reports,
+                    "last_ingested_utc": last_snapshot.get(name),
+                }
+                for name, n_signals, n_reports in source_rows
+            ),
+            key=lambda r: -r["signals"],
+        )
+
+        in_nasa_table = (
+            await self.session.execute(
+                select(func.count(func.distinct(Report.signal_id))).where(
+                    Report.source_name == "nasa_pscomppars"
+                )
+            )
+        ).scalar() or 0
+        tess_discoveries = (
+            await self.session.execute(
+                select(func.count(func.distinct(Report.signal_id))).where(
+                    Report.source_name == "nasa_pscomppars",
+                    Report.raw_payload["disc_facility"].as_string()
+                    == "Transiting Exoplanet Survey Satellite (TESS)",
+                )
+            )
+        ).scalar() or 0
+
         return {
+            "sources": sources,
+            "confirmed_in_nasa_archive": in_nasa_table,
+            "confirmed_tess_discoveries": tess_discoveries,
             "total_signals": total_signals,
             "confirmed_planets": confirmed_planets,
             "planet_candidates": planet_candidates,

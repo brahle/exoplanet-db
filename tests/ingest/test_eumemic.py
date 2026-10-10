@@ -1,115 +1,78 @@
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from exoplanet_db.ingest.eumemic import EumemicIngest
-from exoplanet_db.models import Base, EphemerisFit, Report, Signal
+from exoplanet_db.ingest.eumemic import PUBLISHED_TIERS, EumemicIngest, _earlier_tier
+from exoplanet_db.models.base import Base
+from exoplanet_db.models.entities import Report, Signal
+
+# Header and rows in the shape of results_public/candidates_allsky.csv
+ALLSKY_CSV = """TIC,P_d,P_err,T0_BJD,Rp_Re,b,T14_h,depth_ppm,MES,n_transits,Tmag,Teff,Rstar,dist_pc,ruwe,set,tier
+137499615,0.991911,4e-06,2458842.66166,1.56,0.53,1.2,493,12.7,177,11.63,4052,0.65,90.1,1.15,SNR>=9,A
+200000001,3.5,1e-05,2459000.5,2.0,0.2,2.0,800,10,30,11.0,5000,0.9,100,1.0,SNR>=9,N
+200000002,7.25,2e-05,2459001.5,1.1,0.4,1.8,150,8,20,12.0,4500,0.7,80,1.0,SNR 7.5-9,L1
+200000003,1.25,1e-05,2459002.5,3.0,0.1,1.5,900,9,40,10.0,5200,0.9,60,1.0,neighbour<15",likely EB
+200000004,9.0,1e-05,2459003.5,1.9,0.3,2.2,400,9,12,11.0,4800,0.8,70,1.0,SNR>=9,C
+"""
+
+
+def test_parse_keeps_real_values_and_stable_keys():
+    rows = EumemicIngest(None).parse_candidates_csv(ALLSKY_CSV)
+    assert [r["tier"] for r in rows] == ["A", "N", "L1", "LIKELY EB", "C"]
+    first = rows[0]
+    assert first["source_key"] == "TIC137499615_P0.992"
+    assert first["depth_ppm"] == 493.0 and first["duration_h"] == 1.2
+    assert first["t0_bjd_tdb"] == pytest.approx(2458842.66166)
+    published = [r for r in rows if r["tier"] in PUBLISHED_TIERS]
+    assert [r["tic"] for r in published] == ["137499615", "200000001", "200000002"]
+
+
+def test_parse_does_not_invent_missing_depth_or_duration():
+    rows = EumemicIngest(None).parse_candidates_csv("TIC,P_d,T0_BJD,tier\n1,2.0,2459000.0,A\n")
+    assert rows[0]["depth_ppm"] is None and rows[0]["duration_h"] is None
+
+
+def test_earlier_tier_lookup_matches_on_tic_and_period():
+    tiers = [
+        {"TIC": "354944123", "P_d": "18.908204", "tier": "A"},
+        {"TIC": "1", "P_d": "2.0", "tier": "C"},
+    ]
+    assert _earlier_tier(tiers, "354944123", 18.90820) == "A"
+    assert _earlier_tier(tiers, "354944123", 9.45) is None
+    assert _earlier_tier(tiers, "1", 2.0) == "C"
 
 
 @pytest.mark.asyncio
-async def test_eumemic_ingest_and_tier_mapping():
+async def test_ingest_published_candidates_is_idempotent():
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    sha = "f3dd74abec5879661d76bcfcae2ce6744ba18aad"
 
-    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    rows = [
+        r
+        for r in EumemicIngest(None).parse_candidates_csv(ALLSKY_CSV)
+        if r["tier"] in PUBLISHED_TIERS
+    ]
+    for _ in range(2):
+        async with factory() as session:
+            count = await EumemicIngest(session).ingest_candidates(
+                rows, commit_sha=sha, source_file="results_public/candidates_allsky.csv"
+            )
+            assert count == 3
 
-    sample_csv = """tic,candidate_id,period,t0,tier,status,depth,duration,ra,dec
-12345678,TIC-12345678.01,3.14159,2458500.123,A,planet_candidate,1500,2.1,180.5,25.2
-87654321,TIC-87654321.01,0.98765,1500.456,C,candidate,800,1.5,45.0,-12.0
-99999999,TIC-99999999.01,10.5,2459000.0,N,false_positive,5000,4.0,200.0,0.0
-"""
-
-    async with session_factory() as session:
-        adapter = EumemicIngest(session)
-        parsed = adapter.parse_candidates_csv(sample_csv)
-        assert len(parsed) == 3
-
-        # Test T0 normalization
-        # First row: raw BJD 2458500.123 -> btjd = 1500.123
-        assert abs(parsed[0]["t0_btjd"] - 1500.123) < 1e-4
-        assert abs(parsed[0]["t0_bjd_tdb"] - 2458500.123) < 1e-4
-
-        # Second row: raw BTJD 1500.456 -> bjd = 2458500.456
-        assert abs(parsed[1]["t0_btjd"] - 1500.456) < 1e-4
-        assert abs(parsed[1]["t0_bjd_tdb"] - 2458500.456) < 1e-4
-
-        ingested_count = await adapter.ingest_candidates(
-            parsed,
-            commit_sha="a1b2c3d4e5f6",
-            source_file="results_public/candidates.csv",
+    async with factory() as session:
+        assert (await session.execute(select(func.count(Report.id)))).scalar() == 3
+        dispositions = (await session.execute(select(Signal.current_disposition))).scalars().all()
+        assert set(dispositions) == {"planet_candidate"}  # tier N and L1 are candidates too
+        rep = (
+            await session.execute(select(Report).where(Report.source_key == "TIC137499615_P0.992"))
+        ).scalar_one()
+        assert rep.bibcode_or_url == (
+            f"https://github.com/eumemic/exoplanets/blob/{sha}/results_public/candidates_allsky.csv"
         )
-        assert ingested_count == 3
-
-    async with session_factory() as session:
-        # Check Tier A mapped to planet_candidate
-        sig_a_res = await session.execute(
-            select(Signal).where(Signal.display_name == "TIC-12345678.01")
-        )
-        sig_a = sig_a_res.scalars().first()
-        assert sig_a is not None
-        assert sig_a.current_disposition == "planet_candidate"
-        assert "eumemic_tier:A" in sig_a.scientific_limits
-
-        # Check Tier C mapped to unclassified_transit_like_signal
-        sig_c_res = await session.execute(
-            select(Signal).where(Signal.display_name == "TIC-87654321.01")
-        )
-        sig_c = sig_c_res.scalars().first()
-        assert sig_c is not None
-        assert sig_c.current_disposition == "unclassified_transit_like_signal"
-        assert "eumemic_tier:C" in sig_c.scientific_limits
-
-        # Check Tier N mapped to false_positive
-        sig_n_res = await session.execute(
-            select(Signal).where(Signal.display_name == "TIC-99999999.01")
-        )
-        sig_n = sig_n_res.scalars().first()
-        assert sig_n is not None
-        assert sig_n.current_disposition == "false_positive"
-        assert "eumemic_tier:N" in sig_n.scientific_limits
-
-        # Check CC BY 4.0 license attribution in Report
-        rep_res = await session.execute(select(Report).where(Report.signal_id == sig_a.id))
-        rep = rep_res.scalars().first()
-        assert rep is not None
         assert rep.license == "CC BY 4.0"
-        assert rep.source_name == "eumemic/exoplanets"
-
-        # Check EphemerisFit
-        fit_res = await session.execute(
-            select(EphemerisFit).where(EphemerisFit.signal_id == sig_a.id)
-        )
-        fit = fit_res.scalars().first()
-        assert fit is not None
-        assert fit.fit_model == "eumemic_tier_A"
-
-    await engine.dispose()
-
-
-@pytest.mark.asyncio
-async def test_eumemic_github_csv_format():
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-    session_factory = async_sessionmaker(engine, expire_on_commit=False)
-
-    github_csv = """TIC,label,P_d,P_err,T0_BJD,Rp_Re,b,T14_h,depth_ppm,Tmag,Teff,Rstar,dist_pc,centroid,neighbours,notes,status,TRICERATOPS_FPP,TRICERATOPS_NFPP,upcoming_tess_sectors
-286763141,TOI-6284 (5.24 d; see status),5.244547698,1.05e-05,2458546.853,0.84,0.24,1.84,274.0,9.72,3548.0,0.46,21.0,"S62 TPF","none",chain,previously reported,0.027,0.00025,"110"
-"""
-    async with session_factory() as session:
-        adapter = EumemicIngest(session)
-        parsed = adapter.parse_candidates_csv(github_csv)
-        assert len(parsed) == 1
-        assert parsed[0]["tic"] == "286763141"
-        assert parsed[0]["candidate_id"] == "TOI-6284 (5.24 d; see status)"
-        assert abs(parsed[0]["period_d"] - 5.244547698) < 1e-6
-        assert abs(parsed[0]["depth_ppm"] - 274.0) < 1e-2
-
-        ingested = await adapter.ingest_candidates(parsed)
-        assert ingested == 1
-
     await engine.dispose()

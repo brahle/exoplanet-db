@@ -7,6 +7,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from exoplanet_db.ingest.common import upsert_fit, upsert_report
 from exoplanet_db.models import (
     EphemerisFit,
     PublishedSnapshot,
@@ -14,7 +15,7 @@ from exoplanet_db.models import (
     Signal,
     Target,
 )
-from exoplanet_db.services.reconciliation import check_signal_match
+from exoplanet_db.services.reconciliation import check_signal_match, same_period_signal
 
 
 class IngestionRunner:
@@ -101,7 +102,13 @@ class IngestionRunner:
             existing_signals = sig_res.scalars().all()
 
             matched_signal: Signal | None = None
-            for es in existing_signals:
+            # A different pl_name is a different confirmed planet: never merge into it.
+            candidates_to_match = [
+                es
+                for es in existing_signals
+                if es.display_name == pl_name or es.current_disposition != "confirmed_planet"
+            ]
+            for es in candidates_to_match:
                 if es.display_name == pl_name:
                     matched_signal = es
                     break
@@ -121,6 +128,9 @@ class IngestionRunner:
                     if match_result["match_type"] == "identical_signal":
                         matched_signal = es
                         break
+
+            if matched_signal is None:
+                matched_signal = same_period_signal(candidates_to_match, eff_period)
 
             limits = ["NASA confirmed exoplanet composite row"]
             if eff_period == 0.0:
@@ -144,6 +154,13 @@ class IngestionRunner:
                 )
                 self.session.add(matched_signal)
                 await self.session.flush()
+            elif matched_signal.current_disposition != "confirmed_planet":
+                # A NASA confirmed planet outranks any candidate classification of the same signal
+                matched_signal.current_disposition = "confirmed_planet"
+                matched_signal.display_name = pl_name
+                matched_signal.scientific_limits = list(
+                    dict.fromkeys((matched_signal.scientific_limits or []) + limits)
+                )
 
             # 3. Report record
             report = Report(
@@ -164,8 +181,7 @@ class IngestionRunner:
                 depth_ppm=depth,
                 raw_payload=row,
             )
-            self.session.add(report)
-            await self.session.flush()
+            report = await upsert_report(self.session, report)
 
             # 4. Ephemeris fit (only if epoch and period are both present from single composite)
             if eff_epoch > 2400000 and eff_period > 0:
@@ -182,8 +198,7 @@ class IngestionRunner:
                     fit_model="composite_published_ephemeris",
                     is_coherent=True,
                 )
-                self.session.add(fit)
-                await self.session.flush()
+                fit = await upsert_fit(self.session, fit)
                 if not matched_signal.preferred_ephemeris_fit_id:
                     matched_signal.preferred_ephemeris_fit_id = fit.id
 
@@ -235,7 +250,9 @@ class IngestionRunner:
             dec = float(row.get("dec", 0.0)) if row.get("dec") is not None else 0.0
             period = float(row.get("pl_orbper", 0.0)) if row.get("pl_orbper") is not None else 0.0
             period_err = (
-                float(row.get("pl_orbpererr1", 0.0)) if row.get("pl_orbpererr1") is not None else None
+                float(row.get("pl_orbpererr1", 0.0))
+                if row.get("pl_orbpererr1") is not None
+                else None
             )
             epoch = float(row.get("pl_tranmid", 0.0)) if row.get("pl_tranmid") is not None else 0.0
             duration = (
@@ -294,6 +311,9 @@ class IngestionRunner:
                         matched_signal = es
                         break
 
+            if matched_signal is None:
+                matched_signal = same_period_signal(existing_signals, period)
+
             limits = [
                 f"NASA Exoplanet Archive TESS Object of Interest ({tfopwg or 'TOI'})",
                 "TFOPWG disposition classification pipeline",
@@ -317,11 +337,12 @@ class IngestionRunner:
                 self.session.add(matched_signal)
                 await self.session.flush()
             else:
-                existing_limits = list(matched_signal.scientific_limits or [])
-                for l in limits:
-                    if l not in existing_limits:
-                        existing_limits.append(l)
-                matched_signal.scientific_limits = existing_limits
+                matched_signal.scientific_limits = list(
+                    dict.fromkeys((matched_signal.scientific_limits or []) + limits)
+                )
+                # TFOPWG outranks community classifications, never a NASA confirmation
+                if matched_signal.current_disposition != "confirmed_planet" and tfopwg in disp_map:
+                    matched_signal.current_disposition = disposition
 
             # 3. Report
             report = Report(
@@ -335,8 +356,7 @@ class IngestionRunner:
                 reported_disposition=disposition,
                 raw_payload=row,
             )
-            self.session.add(report)
-            await self.session.flush()
+            report = await upsert_report(self.session, report)
 
             # 4. Ephemeris fit if coherent
             if period > 0 and epoch > 2400000:
@@ -351,8 +371,7 @@ class IngestionRunner:
                     is_coherent=True,
                     fit_model="transit_linear",
                 )
-                self.session.add(fit)
-                await self.session.flush()
+                fit = await upsert_fit(self.session, fit)
                 if not matched_signal.preferred_ephemeris_fit_id:
                     matched_signal.preferred_ephemeris_fit_id = fit.id
 
@@ -369,4 +388,3 @@ class IngestionRunner:
         self.session.add(snapshot)
         await self.session.commit()
         return snapshot
-

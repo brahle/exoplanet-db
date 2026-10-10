@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from exoplanet_db.ingest.common import upsert_fit, upsert_report
 from exoplanet_db.models import (
     EphemerisFit,
     PublishedSnapshot,
@@ -44,16 +45,24 @@ class EumemicIngest:
             # Handle possible key naming variations across candidates.csv and candidates_allsky.csv
             tic = (r.get("tic") or r.get("TIC") or r.get("tic_id") or r.get("tid") or "").strip()
             period_str = r.get("period") or r.get("P_d") or r.get("pl_orbper") or r.get("period_d")
-            t0_str = r.get("t0") or r.get("T0_BJD") or r.get("t0_bjd") or r.get("pl_tranmid") or r.get("epoch")
-            tier = (r.get("tier") or r.get("Tier") or "A").strip()
+            t0_str = (
+                r.get("t0")
+                or r.get("T0_BJD")
+                or r.get("t0_bjd")
+                or r.get("pl_tranmid")
+                or r.get("epoch")
+            )
+            tier = (r.get("tier") or r.get("Tier") or "").strip()
             status = r.get("status") or r.get("disposition") or "planet_candidate"
             depth_str = r.get("depth") or r.get("depth_ppm") or r.get("pl_trandep")
-            dur_str = r.get("duration") or r.get("T14_h") or r.get("duration_h") or r.get("pl_trandur")
+            dur_str = (
+                r.get("duration") or r.get("T14_h") or r.get("duration_h") or r.get("pl_trandur")
+            )
             ra_str = r.get("ra") or r.get("ra_deg")
             dec_str = r.get("dec") or r.get("dec_deg")
             p_err_val = r.get("P_err") or r.get("period_err")
             t0_err_val = r.get("t0_err") or r.get("T0_err")
-            candidate_label = (r.get("label") or r.get("candidate_id") or f"TIC {tic}.01").strip()
+            label = (r.get("label") or r.get("candidate_id") or "").strip()
 
             if not tic or not period_str or not t0_str:
                 continue
@@ -72,14 +81,16 @@ class EumemicIngest:
                 rows.append(
                     {
                         "tic": tic,
-                        "candidate_id": candidate_label,
+                        # Stable across releases; mirrors eumemic's candidates/TIC<id>_P<period> naming
+                        "source_key": f"TIC{tic}_P{period:.3f}",
+                        "candidate_id": label or f"TIC {tic} ({period:.3f} d)",
                         "period_d": period,
                         "period_err_d": float(p_err_val) if p_err_val else None,
                         "t0_btjd": btjd,
                         "t0_bjd_tdb": bjd_tdb,
                         "t0_err_d": float(t0_err_val) if t0_err_val else None,
-                        "depth_ppm": float(depth_str) if depth_str else 1000.0,
-                        "duration_h": float(dur_str) if dur_str else 2.5,
+                        "depth_ppm": float(depth_str) if depth_str else None,
+                        "duration_h": float(dur_str) if dur_str else None,
                         "tier": tier.upper(),
                         "status": status,
                         "ra_deg": float(ra_str) if ra_str else None,
@@ -115,9 +126,12 @@ class EumemicIngest:
                 target = Target(
                     primary_name=target_name,
                     tic_id=tic,
+                    # eumemic publishes no coordinates; enrich_tic_targets fills them from TIC 8.2
                     ra_deg=r["ra_deg"] or 0.0,
                     dec_deg=r["dec_deg"] or 0.0,
-                    epoch=2000.0,
+                    teff_k=_num(r["raw"].get("Teff")),
+                    radius_rsun=_num(r["raw"].get("Rstar")),
+                    tess_mag=_num(r["raw"].get("Tmag")),
                     aliases=[f"TIC {tic}"],
                 )
                 self.session.add(target)
@@ -136,18 +150,13 @@ class EumemicIngest:
                 duration_h=r["duration_h"],
             )
 
-            # Map tier to disposition
+            # Tiers A, B, N (crowded field) and L1 (low SNR) are all published planet candidates;
+            # rows in other tiers are filtered out before ingest (see PUBLISHED_TIERS).
             tier_disposition = "planet_candidate"
-            if r["tier"] in ("A", "B"):
-                tier_disposition = "planet_candidate"
-            elif r["tier"] in ("L1", "C"):
-                tier_disposition = "unclassified_transit_like_signal"
-            elif r["tier"] == "N":
-                tier_disposition = "false_positive"
 
             limits = [
-                f"eumemic_tier:{r['tier']}",
-                f"source_file:{source_file}",
+                f"eumemic/exoplanets tier {r['tier']} candidate ({source_file})",
+                "TESS-only vetting; ground-based follow-up needed to confirm or reject.",
             ]
 
             if matched_signal:
@@ -176,7 +185,7 @@ class EumemicIngest:
                 target_id=target.id,
                 signal_id=signal.id,
                 source_name="eumemic/exoplanets",
-                source_key=f"{r['candidate_id']}@{commit_sha[:8]}",
+                source_key=r["source_key"],
                 retrieval_utc=now,
                 commit_sha=commit_sha,
                 author_or_team="eumemic",
@@ -191,8 +200,7 @@ class EumemicIngest:
                 raw_payload=r["raw"],
                 license="CC BY 4.0",
             )
-            self.session.add(report)
-            await self.session.flush()
+            report = await upsert_report(self.session, report)
 
             # EphemerisFit
             ephem_fit = EphemerisFit(
@@ -208,7 +216,7 @@ class EumemicIngest:
                 fit_model=f"eumemic_tier_{r['tier']}",
                 is_coherent=True,
             )
-            self.session.add(ephem_fit)
+            ephem_fit = await upsert_fit(self.session, ephem_fit)
             count += 1
 
         # Snapshot
@@ -230,37 +238,87 @@ class EumemicIngest:
         return count
 
 
-async def fetch_and_ingest_eumemic(session: AsyncSession) -> int:
-    """Fetches candidate catalogs directly from eumemic/exoplanets on GitHub and ingests them."""
+PUBLISHED_TIERS = {"A", "B", "N", "L1"}
+EUMEMIC_REPO = "eumemic/exoplanets"
+ALLSKY_FILE = "results_public/candidates_allsky.csv"
+EARLIER_TIERS_FILE = "results_public/tiers_earlier_candidates.csv"
+
+
+def _num(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _earlier_tier(tiers: list[dict[str, str]], tic: str, period: float) -> str | None:
+    for t in tiers:
+        p = _num(t.get("P_d"))
+        if t.get("TIC", "").strip() == tic and p and abs(p - period) / period < 2e-4:
+            return (t.get("tier") or "").strip().upper()
+    return None
+
+
+async def fetch_eumemic_candidates(sha: str) -> list[tuple[str, list[dict[str, Any]]]]:
+    """The published candidate list at commit `sha`, as (source_file, records) pairs.
+
+    - candidates_allsky.csv: the full-sky release; keep tiers A, B, N, L1.
+    - candidates.csv and candidates_<date>.csv: earlier releases, re-tiered in
+      tiers_earlier_candidates.csv; keep the rows that are still tier A or B.
+    """
     import httpx
 
+    parser = EumemicIngest(session=None)  # type: ignore[arg-type]
+    raw_base = f"https://raw.githubusercontent.com/{EUMEMIC_REPO}/{sha}/"
+    async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+        listing = await client.get(
+            f"https://api.github.com/repos/{EUMEMIC_REPO}/contents/results_public",
+            params={"ref": sha},
+        )
+        listing.raise_for_status()
+        names = [e["name"] for e in listing.json() if e.get("type") == "file"]
+        earlier_files = sorted(
+            f"results_public/{n}"
+            for n in names
+            if n.startswith("candidates") and n.endswith(".csv") and n != "candidates_allsky.csv"
+        )
+
+        async def get(path: str) -> str:
+            resp = await client.get(raw_base + path)
+            resp.raise_for_status()
+            return resp.text
+
+        out: list[tuple[str, list[dict[str, Any]]]] = []
+        allsky = [
+            r
+            for r in parser.parse_candidates_csv(await get(ALLSKY_FILE))
+            if r["tier"] in PUBLISHED_TIERS
+        ]
+        out.append((ALLSKY_FILE, allsky))
+
+        tiers = list(csv.DictReader(io.StringIO((await get(EARLIER_TIERS_FILE)).strip())))
+        for path in earlier_files:
+            kept = []
+            for r in parser.parse_candidates_csv(await get(path)):
+                tier = _earlier_tier(tiers, r["tic"], r["period_d"])
+                if tier in ("A", "B"):
+                    r["tier"] = tier
+                    kept.append(r)
+            out.append((path, kept))
+    return out
+
+
+async def fetch_and_ingest_eumemic(session: AsyncSession) -> int:
+    """Ingests the published eumemic/exoplanets candidates, pinned to the current commit."""
+    from exoplanet_db.ingest.common import github_head_sha
+
+    sha = await github_head_sha(EUMEMIC_REPO)
     ingest = EumemicIngest(session)
-    total_ingested = 0
-    urls = [
-        (
-            "https://raw.githubusercontent.com/eumemic/exoplanets/main/results_public/candidates.csv",
-            "results_public/candidates.csv",
-        ),
-        (
-            "https://raw.githubusercontent.com/eumemic/exoplanets/main/results_public/candidates_allsky.csv",
-            "results_public/candidates_allsky.csv",
-        ),
-    ]
-
-    async with httpx.AsyncClient(timeout=45.0) as client:
-        for url, source_file in urls:
-            try:
-                resp = await client.get(url)
-                if resp.status_code == 200:
-                    records = ingest.parse_candidates_csv(resp.text)
-                    count = await ingest.ingest_candidates(
-                        records, commit_sha="eumemic-main", source_file=source_file
-                    )
-                    total_ingested += count
-                else:
-                    logger.warning(f"HTTP {resp.status_code} fetching {url}")
-            except Exception as e:
-                logger.warning(f"Failed to fetch and ingest {url}: {e}")
-
-    return total_ingested
-
+    total = 0
+    seen: set[str] = set()
+    for source_file, records in await fetch_eumemic_candidates(sha):
+        fresh = [r for r in records if r["source_key"] not in seen]
+        seen.update(r["source_key"] for r in fresh)
+        total += await ingest.ingest_candidates(fresh, commit_sha=sha, source_file=source_file)
+    logger.info("eumemic/exoplanets @ %s: %d published candidates", sha[:8], total)
+    return total

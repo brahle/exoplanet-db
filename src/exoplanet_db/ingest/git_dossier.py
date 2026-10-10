@@ -10,6 +10,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from exoplanet_db.ingest.common import upsert_fit, upsert_report, upsert_repro_run
 from exoplanet_db.models import (
     EphemerisFit,
     PublishedSnapshot,
@@ -203,8 +204,7 @@ class GitDossierIngest:
             raw_payload=candidate_raw,
             license="CC BY 4.0",
         )
-        self.session.add(report)
-        await self.session.flush()
+        report = await upsert_report(self.session, report)
 
         # 7. Ephemeris fit record
         ephem_fit = EphemerisFit(
@@ -222,7 +222,7 @@ class GitDossierIngest:
             fit_model=dossier.signal.model,
             is_coherent=True,
         )
-        self.session.add(ephem_fit)
+        ephem_fit = await upsert_fit(self.session, ephem_fit)
 
         # 8. ReproducibilityRun record
         cmd = None
@@ -242,7 +242,7 @@ class GitDossierIngest:
             metrics={"verified_files_count": len(verified_hashes)},
             limits=repro_limits,
         )
-        self.session.add(repro_run)
+        repro_run = await upsert_repro_run(self.session, repro_run)
 
         # 9. Published snapshot record
         snapshot = PublishedSnapshot(
@@ -274,9 +274,7 @@ class GitDossierIngest:
 
         if commit_sha is None:
             try:
-                out = subprocess.check_output(
-                    ["git", "rev-parse", "HEAD"], cwd=repo_dir, text=True
-                )
+                out = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo_dir, text=True)
                 commit_sha = out.strip()
             except Exception:
                 commit_sha = "HEAD"
@@ -294,3 +292,38 @@ class GitDossierIngest:
                     ingested.append(sig)
         return ingested
 
+
+CANDIDATES_REPO = "brahle/exoplanet-candidates"
+
+
+async def fetch_and_ingest_github_dossiers(
+    session: AsyncSession, repo: str = CANDIDATES_REPO, ref: str = "main"
+) -> int:
+    """Downloads `repo` at the current commit of `ref` and ingests every dossier.
+
+    Uses the GitHub tarball (no git binary needed) and records the resolved commit, so
+    each report links to a revision that exists and evidence hashes are checked against it.
+    """
+    import tarfile
+    import tempfile
+
+    import httpx
+
+    from exoplanet_db.ingest.common import github_head_sha
+
+    sha = await github_head_sha(repo, ref)
+    async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
+        resp = await client.get(f"https://codeload.github.com/{repo}/tar.gz/{sha}")
+        resp.raise_for_status()
+    with tempfile.TemporaryDirectory() as tmp:
+        archive = Path(tmp) / "repo.tar.gz"
+        archive.write_bytes(resp.content)
+        with tarfile.open(archive) as tar:
+            tar.extractall(tmp, filter="data")
+        roots = [p for p in Path(tmp).iterdir() if p.is_dir()]
+        if len(roots) != 1:
+            raise DossierValidationError(f"Unexpected archive layout for {repo}@{sha}")
+        signals = await GitDossierIngest(session).ingest_repository(
+            roots[0], commit_sha=sha, git_repo=repo
+        )
+    return len(signals)
