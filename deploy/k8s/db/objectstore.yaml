@@ -1,0 +1,24 @@
+apiVersion: barmancloud.cnpg.io/v1
+kind: ObjectStore
+metadata:
+  name: exoplanet-db-db-store
+  namespace: exoplanet-db
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  retentionPolicy: "14d"
+  configuration:
+    destinationPath: s3://backups/marica/cnpg/exoplanet-db-db
+    endpointURL: http://minio.minio.svc.cluster.local:9000
+    s3Credentials:
+      accessKeyId:
+        name: cnpg-backup-minio-credentials
+        key: ACCESS_KEY_ID
+      secretAccessKey:
+        name: cnpg-backup-minio-credentials
+        key: SECRET_ACCESS_KEY
+    wal:
+      compression: gzip
+      maxParallel: 2
+    data:
+      compression: gzip

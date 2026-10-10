@@ -1,0 +1,55 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: exoplanet-db-db
+  namespace: exoplanet-db
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  instances: 1
+
+  imageName: ghcr.io/cloudnative-pg/postgresql:16.4
+
+  postgresql:
+    parameters:
+      shared_buffers: "256MB"
+      effective_cache_size: "512MB"
+      work_mem: "16MB"
+
+  storage:
+    size: 20Gi
+
+  bootstrap:
+    initdb:
+      database: exoplanet
+      owner: exoplanet_owner
+      secret:
+        name: exoplanet-owner-db-creds
+      encoding: UTF8
+      postInitSQL:
+        - CREATE ROLE exoplanet_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
+
+  managed:
+    roles:
+      - name: exoplanet_app
+        ensure: present
+        login: true
+        superuser: false
+        createdb: false
+        createrole: false
+        passwordSecret:
+          name: exoplanet-app-db-creds
+
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "100m"
+    limits:
+      memory: "1Gi"
+
+  plugins:
+    - name: barman-cloud.cloudnative-pg.io
+      isWALArchiver: true
+      parameters:
+        barmanObjectName: exoplanet-db-db-store
+        serverName: exoplanet-db-db

@@ -25,6 +25,10 @@ if database_url:
     if "+asyncpg" in database_url:
         database_url = database_url.replace("+asyncpg", "", 1)
     config.set_main_option("sqlalchemy.url", database_url)
+else:
+    current_url = config.get_main_option("sqlalchemy.url")
+    if not current_url or "driver://" in current_url:
+        config.set_main_option("sqlalchemy.url", "sqlite:///exoplanet_db.sqlite")
 
 # other values from the config, defined by the needs of env.py,
 # can be acquired:

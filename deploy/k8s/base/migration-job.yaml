@@ -1,0 +1,62 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: exoplanet-db-migrate
+  namespace: exoplanet-db
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/sync-wave: "0"
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 1800
+  template:
+    metadata:
+      labels:
+        app: exoplanet-db-migrate
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      imagePullSecrets:
+        - name: harbor-pull
+      containers:
+        - name: migrate
+          image: harbor.brahle.com/brahle/exoplanet-db:v0.1.0
+          command:
+            - sh
+            - -c
+            - |
+              python -c "
+              import time, os, psycopg2
+              url = os.environ.get('DATABASE_URL', '').replace('postgresql+asyncpg://', 'postgresql://')
+              print('Waiting for PostgreSQL connection...')
+              for i in range(24):
+                  try:
+                      conn = psycopg2.connect(url, connect_timeout=3)
+                      conn.close()
+                      print('PostgreSQL is ready')
+                      break
+                  except Exception as e:
+                      print(f'Waiting for database ({i+1}/24): {e}')
+                      time.sleep(5)
+              else:
+                  raise SystemExit('Database not ready after 120s')
+              " && alembic upgrade head
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: exoplanet-owner-db-creds
+                  key: DATABASE_URL
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            runAsNonRoot: true
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"

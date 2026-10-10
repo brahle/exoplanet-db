@@ -4,6 +4,7 @@ import os
 from contextlib import asynccontextmanager
 from typing import Any
 
+import prometheus_client
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -29,8 +30,24 @@ async def get_session() -> AsyncSession:
         yield session
 
 
+METRICS_PORT = int(os.getenv("METRICS_PORT", "9090"))
+ENABLE_METRICS_SERVER = os.getenv("ENABLE_METRICS_SERVER", "false").lower() in ("1", "true", "yes")
+
+SYSTEMS_SEARCH_TOTAL = prometheus_client.Counter(
+    "exoplanet_systems_search_total", "Count of target system searches"
+)
+CANDIDATES_SEARCH_TOTAL = prometheus_client.Counter(
+    "exoplanet_candidates_search_total", "Count of candidate queries"
+)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if ENABLE_METRICS_SERVER:
+        try:
+            prometheus_client.start_http_server(METRICS_PORT)
+        except OSError:
+            pass
     yield
     await engine.dispose()
 
@@ -125,6 +142,7 @@ async def list_systems(
     offset: int = Query(0, ge=0),
     session: AsyncSession = Depends(get_session),
 ):
+    SYSTEMS_SEARCH_TOTAL.inc()
     service = CatalogService(session)
     targets, total = await service.list_systems(
         search=search,
@@ -204,6 +222,7 @@ async def list_candidates(
     offset: int = Query(0, ge=0),
     session: AsyncSession = Depends(get_session),
 ):
+    CANDIDATES_SEARCH_TOTAL.inc()
     service = CatalogService(session)
     signals, total = await service.list_candidates(
         disposition=disposition,

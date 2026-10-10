@@ -1,0 +1,12 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: exoplanet
+  namespace: exoplanet-db
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  name: exoplanet
+  owner: exoplanet_owner
+  cluster:
+    name: exoplanet-db-db

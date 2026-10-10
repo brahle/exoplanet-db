@@ -1,0 +1,16 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: exoplanet-db-db-backup
+  namespace: exoplanet-db
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  # Staggered at 02:45:00 UTC (six-field cron)
+  schedule: "0 45 2 * * *"
+  backupOwnerReference: self
+  cluster:
+    name: exoplanet-db-db
+  method: plugin
+  pluginConfiguration:
+    name: barman-cloud.cloudnative-pg.io

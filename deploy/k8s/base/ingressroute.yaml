@@ -1,0 +1,43 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: exoplanet-tls
+  namespace: exoplanet-db
+spec:
+  secretName: exoplanet-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  dnsNames:
+    - exoplanet.marica.brahle.com
+    - exoplanet-api.marica.brahle.com
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: exoplanet-ratelimit
+  namespace: exoplanet-db
+spec:
+  rateLimit:
+    average: 100
+    burst: 50
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: exoplanet-db-api
+  namespace: exoplanet-db
+spec:
+  entryPoints: [websecure]
+  routes:
+    - match: Host(`exoplanet-api.marica.brahle.com`) || Host(`exoplanet.marica.brahle.com`)
+      kind: Rule
+      priority: 100
+      middlewares:
+        - name: exoplanet-ratelimit
+        - name: traefik-crowdsec-bouncer@kubernetescrd
+      services:
+        - name: exoplanet-db-api
+          port: 8000
+  tls:
+    secretName: exoplanet-tls
