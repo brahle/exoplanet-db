@@ -16,7 +16,7 @@ fi
 VERSION="$(tr -d '[:space:]' < "${VERSION_FILE}")"
 IMAGE_TAG="v${VERSION}"
 REGISTRY="harbor.brahle.com"
-IMAGE_NAME="${REGISTRY}/brahle/exoplanet-db:${IMAGE_TAG}"
+IMAGE_NAME="${REGISTRY}/library/exoplanet-db:${IMAGE_TAG}"
 
 echo "=================================================="
 echo "Building exoplanet-db"

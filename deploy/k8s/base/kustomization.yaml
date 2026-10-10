@@ -13,5 +13,5 @@ resources:
   - prometheus-rules.yaml
 
 images:
-  - name: harbor.brahle.com/brahle/exoplanet-db
+  - name: harbor.brahle.com/library/exoplanet-db
     newTag: v0.1.0

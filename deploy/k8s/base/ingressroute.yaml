@@ -9,6 +9,9 @@ spec:
     name: letsencrypt-prod
     kind: ClusterIssuer
   dnsNames:
+    - exoplanets.brahle.com
+    - exoplanet.brahle.com
+    - exoplanets.marica.brahle.com
     - exoplanet.marica.brahle.com
     - exoplanet-api.marica.brahle.com
 ---
@@ -30,7 +33,7 @@ metadata:
 spec:
   entryPoints: [websecure]
   routes:
-    - match: Host(`exoplanet-api.marica.brahle.com`) || Host(`exoplanet.marica.brahle.com`)
+    - match: Host(`exoplanets.brahle.com`) || Host(`exoplanet.brahle.com`) || Host(`exoplanets.marica.brahle.com`) || Host(`exoplanet.marica.brahle.com`) || Host(`exoplanet-api.marica.brahle.com`)
       kind: Rule
       priority: 100
       middlewares:
