@@ -19,6 +19,14 @@ from exoplanet_db.services.observability import (
     calculate_observability,
     compute_priority_score,
 )
+from exoplanet_db.services.system_physics import (
+    planet_radius_earth,
+    semi_major_axis_au,
+    source_url,
+    star_mass_from_payloads,
+    star_radius_from_payloads,
+    star_teff_from_payloads,
+)
 
 
 class CatalogService:
@@ -94,8 +102,12 @@ class CatalogService:
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[Signal], int]:
-        query = select(Signal).join(Signal.target).options(
-            joinedload(Signal.target),
+        query = (
+            select(Signal)
+            .join(Signal.target)
+            .options(
+                joinedload(Signal.target),
+            )
         )
         count_query = select(func.count(Signal.id)).join(Signal.target)
 
@@ -112,7 +124,9 @@ class CatalogService:
 
         if source:
             if source == "nasa_pscomppars":
-                cond = (Signal.current_disposition == "confirmed_planet") & ~Signal.scientific_limits.cast(String).ilike("%TOI%")
+                cond = (
+                    Signal.current_disposition == "confirmed_planet"
+                ) & ~Signal.scientific_limits.cast(String).ilike("%TOI%")
                 query = query.where(cond)
                 count_query = count_query.where(cond)
             elif source == "nasa_toi":
@@ -124,7 +138,9 @@ class CatalogService:
                 query = query.where(cond)
                 count_query = count_query.where(cond)
             elif "git" in source:
-                cond = Signal.scientific_limits.cast(String).ilike("%checked catalogues%") | Signal.scientific_limits.cast(String).ilike("%Conditional diagnostic%")
+                cond = Signal.scientific_limits.cast(String).ilike(
+                    "%checked catalogues%"
+                ) | Signal.scientific_limits.cast(String).ilike("%Conditional diagnostic%")
                 query = query.where(cond)
                 count_query = count_query.where(cond)
 
@@ -162,6 +178,167 @@ class CatalogService:
         )
         res = await self.session.execute(query)
         return res.scalars().first()
+
+    async def get_candidate_detail(self, signal_id: str) -> dict[str, Any] | None:
+        """Candidate plus its provenance, host-star physics and sibling signals (for system views)."""
+        query = (
+            select(Signal)
+            .where(Signal.id == signal_id)
+            .options(
+                selectinload(Signal.target)
+                .selectinload(Target.signals)
+                .selectinload(Signal.reports),
+                selectinload(Signal.target)
+                .selectinload(Target.signals)
+                .selectinload(Signal.ephemeris_fits),
+            )
+        )
+        res = await self.session.execute(query)
+        signal = res.scalars().first()
+        if signal is None:
+            return None
+        target = signal.target
+        siblings = sorted(target.signals, key=lambda s: (s.primary_period_d or 0.0, s.display_name))
+        payloads = [r.raw_payload for s in siblings for r in s.reports if r.raw_payload]
+
+        star_radius = target.radius_rsun or star_radius_from_payloads(payloads)
+        star_mass = target.mass_msun or star_mass_from_payloads(payloads)
+        star_teff = target.teff_k or star_teff_from_payloads(payloads)
+
+        def physical(s: Signal) -> dict[str, Any]:
+            raw = next((r.raw_payload for r in s.reports if r.raw_payload), None)
+            radius, radius_basis = planet_radius_earth(raw, s.primary_depth_ppm, star_radius)
+            a_au = semi_major_axis_au(s.primary_period_d, star_mass)
+            a_basis = "kepler3_catalogue_mass" if a_au is not None else None
+            if a_au is None and (s.primary_period_d or 0) > 0:
+                a_au = semi_major_axis_au(s.primary_period_d, 1.0)
+                a_basis = "kepler3_assumed_solar_mass"
+            fit = self._preferred_fit(s)
+            return {
+                "id": s.id,
+                "display_name": s.display_name,
+                "current_disposition": s.current_disposition,
+                "period_d": s.primary_period_d if (s.primary_period_d or 0) > 0 else None,
+                "period_err_d": s.primary_period_err_d,
+                "epoch_bjd": s.primary_epoch_bjd if (s.primary_epoch_bjd or 0) > 2400000 else None,
+                "epoch_err_d": s.primary_epoch_err_d
+                if s.primary_epoch_err_d is not None
+                else (fit.epoch_err_d if fit else None),
+                "duration_h": s.primary_duration_h,
+                "duration_err_h": fit.duration_err_h if fit else None,
+                "depth_ppm": s.primary_depth_ppm,
+                "depth_err_ppm": fit.depth_err_ppm if fit else None,
+                "radius_earth": radius,
+                "radius_basis": radius_basis,
+                "semi_major_axis_au": a_au,
+                "semi_major_axis_basis": a_basis,
+                "fit_model": fit.fit_model if fit else None,
+            }
+
+        reports = sorted(signal.reports, key=lambda r: r.retrieval_utc, reverse=True)
+        sources = [
+            {
+                "source_name": r.source_name,
+                "source_key": r.source_key,
+                "url": source_url(
+                    r.source_name, r.source_key, r.bibcode_or_url, r.raw_payload, target.tic_id
+                ),
+                "author_or_team": r.author_or_team,
+                "license": r.license,
+                "commit_sha": r.commit_sha,
+                "retrieval_utc": r.retrieval_utc,
+                "reported_disposition": r.reported_disposition,
+            }
+            for r in reports
+        ]
+        fit = self._preferred_fit(signal)
+        primary = next(
+            (src for r, src in zip(reports, sources) if fit is not None and r.id == fit.report_id),
+            sources[0] if sources else None,
+        )
+
+        return {
+            "signal": signal,
+            "target": target,
+            "planet": physical(signal),
+            "sources": sources,
+            "primary_source": primary,
+            "star": {
+                "radius_rsun": star_radius,
+                "mass_msun": star_mass,
+                "teff_k": star_teff,
+                "tess_mag": target.tess_mag,
+            },
+            "system": [physical(s) for s in siblings],
+        }
+
+    @staticmethod
+    def _preferred_fit(signal: Signal) -> EphemerisFit | None:
+        fits = list(signal.ephemeris_fits or [])
+        if not fits:
+            return None
+        for f in fits:
+            if f.id == signal.preferred_ephemeris_fit_id:
+                return f
+        return fits[0]
+
+    async def get_population(self) -> dict[str, list[Any]]:
+        """Columnar period/depth/radius for every signal with a period (population context plots)."""
+        sig_rows = (
+            await self.session.execute(
+                select(
+                    Signal.id,
+                    Signal.display_name,
+                    Signal.current_disposition,
+                    Signal.primary_period_d,
+                    Signal.primary_depth_ppm,
+                    Signal.target_id,
+                    Target.radius_rsun,
+                ).join(Signal.target)
+            )
+        ).all()
+        catalogue_radius: dict[str, float] = {}
+        rep_rows = (
+            await self.session.execute(
+                select(Report.signal_id, Report.target_id, Report.raw_payload).where(
+                    Report.source_name.in_(["nasa_pscomppars", "nasa_toi"])
+                )
+            )
+        ).all()
+        star_radius_by_target: dict[str, float] = {}
+        for sid, tid, raw in rep_rows:
+            if not raw:
+                continue
+            r, basis = planet_radius_earth(raw, None, None)
+            if sid and r is not None and basis == "catalogue":
+                catalogue_radius.setdefault(sid, r)
+            st = star_radius_from_payloads([raw])
+            if st is not None:
+                star_radius_by_target.setdefault(tid, st)
+
+        cols: dict[str, list[Any]] = {
+            "id": [],
+            "name": [],
+            "disposition": [],
+            "period_d": [],
+            "depth_ppm": [],
+            "radius_earth": [],
+        }
+        for sid, name, disp, period, depth, tid, star_r in sig_rows:
+            if not period or period <= 0:
+                continue
+            radius = catalogue_radius.get(sid)
+            if radius is None:
+                radius, _ = planet_radius_earth(
+                    None, depth, star_r or star_radius_by_target.get(tid)
+                )
+            cols["id"].append(sid)
+            cols["name"].append(name)
+            cols["disposition"].append(disp)
+            cols["period_d"].append(round(period, 6))
+            cols["depth_ppm"].append(round(depth, 1) if depth else None)
+            cols["radius_earth"].append(round(radius, 3) if radius else None)
+        return cols
 
     async def list_published_snapshots(self) -> list[PublishedSnapshot]:
         query = select(PublishedSnapshot).order_by(PublishedSnapshot.published_at.desc())

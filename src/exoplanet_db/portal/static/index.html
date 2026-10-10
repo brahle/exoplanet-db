@@ -6,6 +6,14 @@
   <title>Exoplanet DB — AI Agent-Friendly Exoplanet & Candidate Database</title>
   <meta name="description" content="AI agent-friendly, lightweight database of exoplanets and transit candidate dossiers with reproducibility tracking and topocentric ephemeris engine.">
   <link rel="stylesheet" href="/static/portal.css">
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "/static/vendor/three/three.module.min.js",
+        "three/addons/": "/static/vendor/three/"
+      }
+    }
+  </script>
 </head>
 <body>
 
@@ -255,6 +263,26 @@ pip install git+https://github.com/brahle/exoplanet-db.git
 }</pre>
         </div>
 
+        <div style="margin-bottom: 1.25rem;">
+          <h4 style="font-size: 0.9375rem; font-weight: 600; margin-bottom: 0.25rem; color: var(--text-primary);">Option 4: Cloned Local Repository</h4>
+          <p style="color: var(--text-secondary); font-size: 0.8125rem; margin-bottom: 0.5rem;">
+            If you have cloned the source repository (e.g. <code>git clone https://github.com/brahle/exoplanet-db.git</code>), point directly to your working directory:
+          </p>
+          <pre style="background: var(--bg-card); padding: 1rem; border-radius: var(--radius-sm); border: 1px solid var(--border-color); font-family: var(--font-mono); font-size: 0.8125rem; overflow-x: auto; color: var(--text-primary);">
+{
+  "mcpServers": {
+    "exoplanet-db": {
+      "command": "python",
+      "args": ["-m", "exoplanet_db.mcp.server"],
+      "cwd": "/path/to/cloned/exoplanet-db"
+    }
+  }
+}</pre>
+          <p style="color: var(--text-muted); font-size: 0.75rem; margin-top: 0.25rem;">
+            * Note: No direct database credentials (<code>DATABASE_URL</code>) are required. The MCP client communicates over read-only HTTPS REST to <code>https://exoplanets.brahle.com</code> by default.
+          </p>
+        </div>
+
         <div style="margin-top: 1.5rem; display: flex; gap: 1rem; align-items: center;">
           <a href="/docs" target="_blank" class="btn-primary" style="display: inline-block; text-decoration: none;">Interactive REST OpenAPI Docs (/docs)</a>
           <a href="/openapi.json" target="_blank" style="color: var(--accent-cyan); font-size: 0.875rem; text-decoration: none;">View OpenAPI JSON (/openapi.json)</a>
@@ -279,12 +307,13 @@ pip install git+https://github.com/brahle/exoplanet-db.git
         <strong>Community Dataset Attribution:</strong> Planetary candidate and community dossiers incorporate data from <em>eumemic/exoplanets</em> and ExoFOP TOI/CTOI registries, distributed under the <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">Creative Commons Attribution 4.0 International (CC BY 4.0)</a> license.
       </div>
       <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 0.5rem; font-size: 0.75rem; color: var(--text-muted);">
-        <span>Exoplanet DB v0.1.0 — Homelab Instance (marica)</span>
+        <span>Exoplanet DB v0.1.11 — Homelab Instance (marica)</span>
         <span>Software released under the MIT License</span>
       </div>
     </div>
   </footer>
 
+  <script src="/static/charts.js"></script>
   <script src="/static/portal.js"></script>
 </body>
 </html>

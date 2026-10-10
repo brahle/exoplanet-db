@@ -1,16 +1,22 @@
 from __future__ import annotations
 
+import gzip
+import importlib.metadata
+import json
 import os
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import prometheus_client
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -56,11 +62,16 @@ async def lifespan(app: FastAPI):
     await engine.dispose()
 
 
+try:
+    APP_VERSION = importlib.metadata.version("exoplanet-db")
+except importlib.metadata.PackageNotFoundError:
+    APP_VERSION = "0.0.0+unknown"
+
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://exoplanets.brahle.com").rstrip("/")
 
 app = FastAPI(
     title="Exoplanet DB API",
-    version="0.1.8",
+    version=APP_VERSION,
     description="AI agent-friendly, lightweight database of exoplanets and transit candidate dossiers with reproducibility tracking.",
     servers=[
         {"url": PUBLIC_BASE_URL, "description": "Production (marica)"},
@@ -80,8 +91,22 @@ app.add_middleware(
 # Mount MCP Remote SSE application for AI Agents
 from exoplanet_db.mcp.server import mcp
 
-app.mount("/mcp", mcp.sse_app())
-app.mount("/sse", mcp.sse_app())
+# Keep DNS-rebinding protection on; allow the public host plus local/in-cluster access.
+_public_host = urlparse(PUBLIC_BASE_URL).netloc
+mcp_security = TransportSecuritySettings(
+    enable_dns_rebinding_protection=True,
+    allowed_hosts=[
+        _public_host,
+        "localhost:*",
+        "127.0.0.1:*",
+        "exoplanet-db-api:*",
+        "exoplanet-db-api.exoplanet-db.svc:*",
+        "exoplanet-db-api.exoplanet-db.svc.cluster.local:*",
+    ],
+    allowed_origins=[PUBLIC_BASE_URL, "http://localhost:*", "http://127.0.0.1:*"],
+)
+app.mount("/mcp", mcp.sse_app(transport_security=mcp_security))
+app.mount("/sse", mcp.sse_app(sse_path="/", transport_security=mcp_security))
 
 PORTAL_STATIC_DIR = Path(__file__).resolve().parent.parent / "portal" / "static"
 if not (PORTAL_STATIC_DIR / "index.html").exists():
@@ -164,8 +189,55 @@ class CandidateSummary(BaseModel):
     scientific_limits: list[str]
 
 
+class SourceReference(BaseModel):
+    source_name: str
+    source_key: str | None = None
+    url: str | None = Field(None, description="Public landing page for this report, when one exists")
+    author_or_team: str | None = None
+    license: str | None = None
+    commit_sha: str | None = None
+    retrieval_utc: datetime | None = None
+    reported_disposition: str | None = None
+
+
+class HostStarResponse(TargetResponse):
+    radius_rsun: float | None = None
+    mass_msun: float | None = None
+    tess_mag: float | None = None
+
+
+class PlanetPhysics(BaseModel):
+    id: str
+    display_name: str
+    current_disposition: str
+    period_d: float | None = None
+    period_err_d: float | None = None
+    epoch_bjd: float | None = None
+    epoch_err_d: float | None = None
+    duration_h: float | None = None
+    duration_err_h: float | None = None
+    depth_ppm: float | None = None
+    depth_err_ppm: float | None = None
+    radius_earth: float | None = None
+    radius_basis: str | None = Field(
+        None, description="'catalogue' (published) or 'transit_depth' (R* x sqrt(depth), undiluted)"
+    )
+    semi_major_axis_au: float | None = None
+    semi_major_axis_basis: str | None = Field(
+        None, description="'kepler3_catalogue_mass' or 'kepler3_assumed_solar_mass'"
+    )
+    fit_model: str | None = None
+
+
 class CandidateDetailResponse(CandidateSummary):
-    host_star: TargetResponse | None = None
+    host_star: HostStarResponse | None = None
+    epoch_err_d: float | None = None
+    planet: PlanetPhysics | None = None
+    primary_source: SourceReference | None = None
+    sources: list[SourceReference] = Field(default_factory=list)
+    system: list[PlanetPhysics] = Field(
+        default_factory=list, description="Every signal on the same host, ordered by period"
+    )
     attribution: dict[str, str] = Field(default_factory=lambda: ATTRIBUTION_METADATA)
 
 
@@ -227,7 +299,7 @@ class CatalogStatsResponse(BaseModel):
 
 @app.get("/healthz", tags=["Operations"])
 async def healthz():
-    return {"status": "ok", "version": "0.1.0"}
+    return {"status": "ok", "version": APP_VERSION}
 
 
 @app.get("/v1/stats", response_model=CatalogStatsResponse, tags=["Catalog"])
@@ -376,34 +448,40 @@ async def get_candidate(
     session: AsyncSession = Depends(get_session),
 ):
     service = CatalogService(session)
-    signal = await service.get_candidate_by_id(candidate_id)
-    if not signal:
+    detail = await service.get_candidate_detail(candidate_id)
+    if not detail:
         raise HTTPException(status_code=404, detail=f"Candidate '{candidate_id}' not found")
+    signal = detail["signal"]
+    target = detail["target"]
+    star = detail["star"]
+    primary = detail["primary_source"]
 
-    host_star = None
-    if signal.target:
-        host_star = TargetResponse(
-            id=signal.target.id,
-            primary_name=signal.target.primary_name,
-            tic_id=signal.target.tic_id,
-            gaia_dr3_id=signal.target.gaia_dr3_id,
-            ra_deg=signal.target.ra_deg,
-            dec_deg=signal.target.dec_deg,
-            v_mag=signal.target.v_mag,
-            teff_k=signal.target.teff_k,
-            aliases=signal.target.aliases,
-        )
+    host_star = HostStarResponse(
+        id=target.id,
+        primary_name=target.primary_name,
+        tic_id=target.tic_id,
+        gaia_dr3_id=target.gaia_dr3_id,
+        ra_deg=target.ra_deg,
+        dec_deg=target.dec_deg,
+        v_mag=target.v_mag,
+        teff_k=star["teff_k"],
+        aliases=target.aliases,
+        radius_rsun=star["radius_rsun"],
+        mass_msun=star["mass_msun"],
+        tess_mag=star["tess_mag"],
+    )
 
     return CandidateDetailResponse(
         id=signal.id,
         target_id=signal.target_id,
-        target_name=signal.target.primary_name if signal.target else None,
-        tic_id=signal.target.tic_id if signal.target else None,
-        source_name=resolve_source_name(signal),
+        target_name=target.primary_name,
+        tic_id=target.tic_id,
+        source_name=primary["source_name"] if primary else resolve_source_name(signal),
         display_name=signal.display_name,
         period_d=signal.primary_period_d,
         period_err_d=signal.primary_period_err_d,
         epoch_bjd=signal.primary_epoch_bjd,
+        epoch_err_d=detail["planet"]["epoch_err_d"],
         duration_h=signal.primary_duration_h,
         depth_ppm=signal.primary_depth_ppm,
         current_disposition=signal.current_disposition,
@@ -411,7 +489,39 @@ async def get_candidate(
         timing_consistency_status=signal.timing_consistency_status,
         scientific_limits=signal.scientific_limits,
         host_star=host_star,
+        planet=PlanetPhysics(**detail["planet"]),
+        primary_source=SourceReference(**primary) if primary else None,
+        sources=[SourceReference(**src) for src in detail["sources"]],
+        system=[PlanetPhysics(**p) for p in detail["system"]],
     )
+
+
+_POPULATION_CACHE: dict[str, Any] = {"at": 0.0, "body": None}
+POPULATION_CACHE_SECONDS = 600
+
+
+@app.get("/v1/population", tags=["Catalog"])
+async def get_population(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+):
+    """Columnar period / depth / radius for every periodic signal (population context plots).
+
+    radius_earth is the published radius when the catalogue has one, otherwise R* x sqrt(depth).
+    """
+    now = time.monotonic()
+    if _POPULATION_CACHE["body"] is None or now - _POPULATION_CACHE["at"] > POPULATION_CACHE_SECONDS:
+        cols = await CatalogService(session).get_population()
+        body = json.dumps({**cols, "count": len(cols["id"])}, separators=(",", ":")).encode()
+        _POPULATION_CACHE.update(at=now, body=body, gz=gzip.compress(body, 6))
+    headers = {"Cache-Control": "public, max-age=600", "Vary": "Accept-Encoding"}
+    if "gzip" in request.headers.get("accept-encoding", ""):
+        return Response(
+            _POPULATION_CACHE["gz"],
+            media_type="application/json",
+            headers={**headers, "Content-Encoding": "gzip"},
+        )
+    return Response(_POPULATION_CACHE["body"], media_type="application/json", headers=headers)
 
 
 @app.get("/v1/snapshots", tags=["Catalog"])

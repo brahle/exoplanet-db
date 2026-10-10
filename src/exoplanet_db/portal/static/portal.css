@@ -20,6 +20,15 @@
   --radius-lg: 16px;
   --shadow-sm: 0 2px 4px rgba(0, 0, 0, 0.4);
   --shadow-lg: 0 10px 25px -5px rgba(0, 0, 0, 0.6);
+
+  /* Chart tokens (dark). Series 1/2 validated against --bg-card for CVD separation and 3:1 contrast. */
+  --viz-surface: #182235;
+  --viz-series-1: #3987e5;
+  --viz-series-2: #d95926;
+  --viz-muted: #8b95a7;
+  --viz-grid: rgba(148, 163, 184, 0.14);
+  --viz-axis: #64748b;
+  --viz-band: rgba(57, 135, 229, 0.18);
 }
 
 [data-theme="light"] {
@@ -33,6 +42,14 @@
   --border-color: #cbd5e1;
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.1);
   --shadow-lg: 0 10px 20px -3px rgba(0, 0, 0, 0.1);
+
+  --viz-surface: #f1f5f9;
+  --viz-series-1: #2a78d6;
+  --viz-series-2: #eb6834;
+  --viz-muted: #94a3b8;
+  --viz-grid: rgba(71, 85, 105, 0.14);
+  --viz-axis: #94a3b8;
+  --viz-band: rgba(42, 120, 214, 0.16);
 }
 
 * {
@@ -567,9 +584,10 @@ dialog.dossier-modal {
   background: var(--bg-surface);
   color: var(--text-primary);
   border-radius: var(--radius-lg);
-  padding: 2rem;
-  max-width: 800px;
-  width: 90%;
+  padding: 1.75rem 2rem 2rem;
+  max-width: 1180px;
+  width: calc(100vw - 32px);
+  max-height: calc(100dvh - 32px);
   box-shadow: var(--shadow-lg);
 }
 
@@ -630,4 +648,681 @@ footer {
 
 .attribution-statement a:hover {
   text-decoration: underline;
+}
+
+/* ---------- Candidate detail ---------- */
+.detail-loading {
+  text-align: center;
+  padding: 3rem;
+  color: var(--text-secondary);
+}
+
+.detail-header {
+  align-items: flex-start;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.detail-title h2 {
+  font-size: 1.625rem;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.detail-subtitle {
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+  margin-top: 0.25rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1rem;
+}
+
+.detail-id {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.detail-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+
+.detail-action {
+  cursor: pointer;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  text-decoration: none;
+}
+
+.detail-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 0.875rem;
+}
+
+.detail-source {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.375rem 0.75rem;
+  margin-bottom: 1.25rem;
+}
+
+.source-link {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: var(--accent-cyan);
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+a.source-link:hover,
+.detail-links a:hover,
+.detail-more:hover {
+  text-decoration: underline;
+}
+
+.detail-more {
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+}
+
+.detail-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 1px;
+  background: var(--border-color);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  margin-bottom: 1.5rem;
+}
+
+.detail-metrics.compact {
+  margin-bottom: 0.75rem;
+}
+
+.detail-metric {
+  background: var(--bg-card);
+  padding: 0.75rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  min-width: 0;
+}
+
+.detail-metric .metric-val {
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.metric-note {
+  font-size: 0.6875rem;
+  color: var(--text-muted);
+}
+
+.detail-viz {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 1rem;
+  margin-bottom: 1.75rem;
+}
+
+.detail-view-tabs {
+  margin-bottom: 1rem;
+}
+
+.detail-view-panel {
+  min-height: 240px;
+}
+
+.detail-section {
+  margin-bottom: 1.5rem;
+}
+
+.detail-card {
+  padding: 1rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+}
+
+.detail-card .detail-metric {
+  background: var(--bg-surface);
+}
+
+.detail-section-title {
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+  margin-bottom: 0.625rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-family: var(--font-mono);
+}
+
+.detail-limits {
+  padding-left: 1.25rem;
+  font-size: 0.875rem;
+  line-height: 1.6;
+}
+
+.detail-muted {
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+
+.detail-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.25rem;
+  font-size: 0.8125rem;
+  margin-bottom: 0.5rem;
+}
+
+.detail-links a {
+  color: var(--accent-cyan);
+  text-decoration: none;
+}
+
+.table-scroll {
+  overflow-x: auto;
+}
+
+/* Segmented control */
+.segmented {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+}
+
+.segmented button {
+  font: inherit;
+  font-size: 0.8125rem;
+  padding: 0.3rem 0.75rem;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.segmented button:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.segmented button.active {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  font-weight: 600;
+  box-shadow: inset 0 -2px 0 var(--viz-series-1);
+}
+
+/* ---------- Charts ---------- */
+.viz-host {
+  position: relative;
+  width: 100%;
+}
+
+.viz-host svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.viz-canvas {
+  display: block;
+}
+
+.viz-overlay {
+  position: absolute;
+  inset: 0;
+}
+
+.viz-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.viz-controls-label {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.viz-grid line {
+  stroke: var(--viz-grid);
+  stroke-width: 1;
+}
+
+.viz-axis text {
+  fill: var(--text-secondary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  font-family: var(--font-sans);
+}
+
+.viz-axis line,
+.viz-baseline {
+  stroke: var(--viz-axis);
+  stroke-width: 1;
+}
+
+.viz-axis .viz-axis-title {
+  fill: var(--text-muted);
+  font-size: 11px;
+}
+
+.viz-line {
+  fill: none;
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.viz-line.series-1 {
+  stroke: var(--viz-series-1);
+}
+
+.viz-dot.series-1 {
+  fill: var(--viz-series-1);
+  stroke: var(--viz-surface);
+  stroke-width: 2;
+}
+
+.viz-band {
+  fill: var(--viz-band);
+  stroke: none;
+}
+
+.viz-crosshair {
+  stroke: var(--text-muted);
+  stroke-width: 1;
+}
+
+.viz-hover-ring {
+  fill: none;
+  stroke: var(--text-primary);
+  stroke-width: 1.5;
+  pointer-events: none;
+}
+
+.viz-contacts line,
+.viz-now line {
+  stroke: var(--viz-axis);
+  stroke-width: 1;
+  opacity: 0.6;
+}
+
+.viz-contacts text,
+.viz-now text,
+.viz-reference text {
+  fill: var(--text-muted);
+  font-size: 10px;
+  font-family: var(--font-mono);
+}
+
+.viz-reference line {
+  stroke: var(--viz-series-2);
+  stroke-width: 1;
+  opacity: 0.8;
+}
+
+.viz-direct-label {
+  fill: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  paint-order: stroke;
+  stroke: var(--viz-surface);
+  stroke-width: 3px;
+}
+
+.viz-tooltip {
+  position: absolute;
+  z-index: 5;
+  pointer-events: none;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-lg);
+  padding: 0.5rem 0.625rem;
+  font-size: 0.75rem;
+  min-width: 150px;
+  max-width: 280px;
+}
+
+.viz-tooltip-head {
+  color: var(--text-secondary);
+  margin-bottom: 0.25rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 0.5rem;
+}
+
+.viz-tooltip-head strong {
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.viz-tooltip-row {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.viz-tooltip-row strong {
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.viz-tooltip-key {
+  width: 12px;
+  height: 2px;
+  border-radius: 1px;
+  flex-shrink: 0;
+}
+
+.viz-tooltip-label {
+  color: var(--text-muted);
+}
+
+.viz-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem 1rem;
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+  margin-bottom: 0.5rem;
+}
+
+.viz-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.viz-legend-swatch {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  margin-right: 0.375rem;
+  flex-shrink: 0;
+}
+
+.viz-legend-item .viz-legend-swatch {
+  margin-right: 0;
+}
+
+.legend-catalogue .viz-legend-swatch {
+  opacity: 0.6;
+}
+
+.legend-self .viz-legend-swatch {
+  width: 12px;
+  height: 12px;
+  box-shadow: 0 0 0 2px var(--viz-surface), 0 0 0 3px var(--viz-series-1);
+}
+
+.viz-caption {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin-top: 0.625rem;
+  line-height: 1.5;
+}
+
+.viz-subtitle {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  margin: 1rem 0 0.375rem;
+}
+
+.viz-empty {
+  color: var(--text-muted);
+  font-size: 0.875rem;
+  padding: 2rem 0.5rem;
+  text-align: center;
+}
+
+.viz-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8125rem;
+}
+
+.viz-table th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  padding: 0.375rem 0.625rem;
+  border-bottom: 1px solid var(--border-color);
+  white-space: nowrap;
+}
+
+.detail-sources-table td:nth-child(n+4) {
+  white-space: nowrap;
+}
+
+.viz-table td {
+  padding: 0.375rem 0.625rem;
+  border-bottom: 1px solid var(--viz-grid);
+  font-variant-numeric: tabular-nums;
+  vertical-align: top;
+}
+
+.viz-table a {
+  color: var(--accent-cyan);
+  text-decoration: none;
+}
+
+.viz-table-toggle {
+  margin-top: 0.5rem;
+  font-size: 0.8125rem;
+}
+
+.viz-table-toggle summary {
+  cursor: pointer;
+  color: var(--text-secondary);
+  margin-bottom: 0.375rem;
+}
+
+/* ---------- 3D system ---------- */
+.system3d {
+  background: var(--bg-card);
+}
+
+.system3d:fullscreen {
+  padding: 1rem;
+  overflow: auto;
+}
+
+.system3d-stage {
+  position: relative;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: #05070d;
+  touch-action: none;
+}
+
+.system3d-stage canvas {
+  display: block;
+}
+
+.system3d-labels {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.system3d-label {
+  font-size: 11px;
+  font-family: var(--font-sans);
+  color: #cbd5e1;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(5, 7, 13, 0.6);
+  white-space: nowrap;
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.system3d-label.self {
+  color: #fff;
+  font-weight: 700;
+  font-size: 12px;
+  background: rgba(57, 135, 229, 0.85);
+  cursor: default;
+}
+
+.system3d.edge-on .system3d-label:not(.self) {
+  opacity: 0;
+}
+
+.system3d.edge-on .system3d-label:not(.self):hover {
+  opacity: 1;
+}
+
+.system3d-label.star,
+.system3d-label.earth {
+  cursor: default;
+  color: #94a3b8;
+  background: transparent;
+}
+
+.system3d-hud {
+  position: absolute;
+  top: 0.5rem;
+  left: 0.75rem;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.system3d-clock {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: #e2e8f0;
+  background: rgba(5, 7, 13, 0.6);
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+.system3d-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.system3d-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+}
+
+.system3d-row .tag-pill {
+  cursor: pointer;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 0.8125rem;
+}
+
+.system3d-row .tag-pill.active {
+  border-color: var(--viz-series-1);
+}
+
+.system3d-range {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+}
+
+.system3d-range input[type="range"] {
+  width: 140px;
+  accent-color: var(--viz-series-1);
+}
+
+.system3d-value {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-primary);
+  min-width: 5.5em;
+}
+
+.system3d-legend {
+  margin-top: 0.75rem;
+  overflow-x: auto;
+}
+
+.system3d-table tr.is-self td {
+  background: rgba(57, 135, 229, 0.08);
+}
+
+.system3d-state {
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.system3d-state.active {
+  color: var(--viz-series-1);
+  font-weight: 600;
+}
+
+@media (max-width: 640px) {
+  header {
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    padding: 0.75rem 1rem;
+  }
+
+  .tab-nav {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+
+  dialog.dossier-modal {
+    padding: 1rem;
+    width: calc(100vw - 16px);
+    max-height: calc(100dvh - 16px);
+  }
+
+  .detail-header {
+    flex-direction: column-reverse;
+  }
+
+  .detail-actions {
+    align-self: flex-end;
+  }
+
+  .detail-viz {
+    padding: 0.625rem;
+  }
+
+  .system3d-range input[type="range"] {
+    width: 110px;
+  }
 }

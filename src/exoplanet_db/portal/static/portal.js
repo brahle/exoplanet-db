@@ -80,10 +80,10 @@ function handleRoute() {
 
   // 1. Direct candidate route: #candidate/<candidateId>
   if (hash.startsWith('#candidate/')) {
-    const candidateId = hash.replace('#candidate/', '').trim();
+    const { id, view } = parseCandidateHash(hash);
     switchTab('candidates', false);
-    if (candidateId) {
-      openDossierModal(candidateId);
+    if (id) {
+      openDossierModal(id, view);
     }
     return;
   }
@@ -91,6 +91,8 @@ function handleRoute() {
   // 2. Close modal if navigating away from candidate
   const modal = document.getElementById('dossier-modal');
   if (modal && modal.open) {
+    disposeDetailViews();
+    detailState.candidate = null;
     modal.close();
   }
 
@@ -351,12 +353,68 @@ function renderCandidateCard(c) {
 }
 
 // --- Candidate Dossier Modal ---
-async function openDossierModal(candidateId) {
+const DETAIL_VIEWS = [
+  ['transit', 'Transit model'],
+  ['timing', 'Timing forecast'],
+  ['population', 'Population'],
+  ['system', '3D system'],
+];
+const detailState = { candidate: null, view: 'transit', system3d: null, requestSeq: 0 };
+
+function parseCandidateHash(hash) {
+  const rest = hash.slice('#candidate/'.length);
+  const [rawId, query = ''] = rest.split('?');
+  const view = new URLSearchParams(query).get('view');
+  return { id: decodeURIComponent(rawId || '').trim(), view };
+}
+
+function fmtValue(value, digits, unit) {
+  if (value === null || value === undefined || value === 0) return 'N/A';
+  return `${value.toFixed(digits)}${unit ? ' ' + unit : ''}`;
+}
+
+function fmtErr(value, err, digits, unit) {
+  if (!value || !err) return '';
+  const e = err < 1e-3 ? err.toExponential(1) : err.toFixed(Math.max(digits, 1));
+  return `± ${e}${unit ? ' ' + unit : ''}`;
+}
+
+function sourceLabel(src) {
+  return src.source_key && !src.source_key.startsWith(src.source_name)
+    ? `${src.source_name} · ${src.source_key}`
+    : src.source_name;
+}
+
+function renderSourceLink(src, className = 'source-link') {
+  if (!src) return '';
+  const label = escapeHtml(sourceLabel(src));
+  if (!src.url) return `<span class="${className}" title="No public landing page for this source">${label}</span>`;
+  return `<a class="${className}" href="${escapeHtml(src.url)}" target="_blank" rel="noopener noreferrer">${label} <span aria-hidden="true">↗</span></a>`;
+}
+
+function disposeDetailViews() {
+  if (detailState.system3d) {
+    detailState.system3d.dispose();
+    detailState.system3d = null;
+  }
+}
+
+async function openDossierModal(candidateId, view) {
   const modal = document.getElementById('dossier-modal');
   const content = document.getElementById('dossier-modal-content');
   if (!modal || !content) return;
+  const requestedView = DETAIL_VIEWS.some(([k]) => k === view) ? view : null;
 
-  content.innerHTML = '<div style="text-align: center; padding: 3rem; color: var(--text-secondary);">Loading candidate dossier and lightcurve...</div>';
+  // Same candidate, different view (e.g. back/forward between views): just switch.
+  if (modal.open && detailState.candidate && detailState.candidate.id === candidateId) {
+    if (requestedView && requestedView !== detailState.view) showDetailView(requestedView, false);
+    return;
+  }
+
+  disposeDetailViews();
+  detailState.candidate = null;
+  const seq = ++detailState.requestSeq;
+  content.innerHTML = '<div class="detail-loading">Loading candidate dossier…</div>';
   if (!modal.open) {
     modal.showModal();
   }
@@ -365,79 +423,15 @@ async function openDossierModal(candidateId) {
     const res = await fetch(`/v1/candidates/${encodeURIComponent(candidateId)}`);
     if (!res.ok) throw new Error(`HTTP error ${res.status}`);
     const candidate = await res.json();
-
-    const depth = candidate.depth_ppm || 5000;
-    const duration = candidate.duration_h || 2.5;
-    const period = candidate.period_d || 3.0;
-    const directUrl = `${window.location.origin}${window.location.pathname}#candidate/${candidate.id}`;
-
-    content.innerHTML = `
-      <div class="modal-header">
-        <div>
-          <h2 style="font-size: 1.5rem; font-weight: 700;">${escapeHtml(candidate.display_name)}</h2>
-          <span style="color: var(--text-secondary); font-family: var(--font-mono); font-size: 0.8125rem;">ID: ${escapeHtml(candidate.id)}</span>
-          ${candidate.source_name ? `<span class="source-badge" style="margin-left: 0.5rem;">${escapeHtml(candidate.source_name)}</span>` : ''}
-        </div>
-        <div style="display: flex; align-items: center; gap: 0.5rem;">
-          <button id="copy-candidate-link" class="tag-pill" style="cursor: pointer; background: var(--bg-card); border: 1px solid var(--border-color); color: var(--text-primary);" title="Copy direct link to clipboard">📋 Copy Link</button>
-          <a href="#candidate/${encodeURIComponent(candidate.id)}" target="_blank" rel="noopener" class="tag-pill" style="text-decoration: none; background: var(--bg-card); border: 1px solid var(--border-color); color: var(--accent-cyan);" title="Open direct URL in new tab">↗ New Tab</a>
-          <button class="modal-close-btn" id="modal-close" aria-label="Close dialog">&times;</button>
-        </div>
-      </div>
-
-      <div style="margin-bottom: 1rem;">
-        <span class="badge badge-candidate">${escapeHtml(candidate.current_disposition.replace(/_/g, ' '))}</span>
-        <span class="tag-pill" style="margin-left: 0.5rem;">Localisation: ${escapeHtml(candidate.source_localisation_status)}</span>
-        <span class="tag-pill">Timing: ${escapeHtml(candidate.timing_consistency_status)}</span>
-      </div>
-
-      <div class="metric-row" style="margin-bottom: 1.5rem;">
-        <div class="metric-item">
-          <span class="metric-label">Period</span>
-          <span class="metric-val">${candidate.period_d ? candidate.period_d.toFixed(6) + ' d' : 'N/A'}</span>
-        </div>
-        <div class="metric-item">
-          <span class="metric-label">Epoch (BJD)</span>
-          <span class="metric-val">${candidate.epoch_bjd ? candidate.epoch_bjd.toFixed(4) : 'N/A'}</span>
-        </div>
-        <div class="metric-item">
-          <span class="metric-label">Transit Depth</span>
-          <span class="metric-val">${candidate.depth_ppm ? Math.round(candidate.depth_ppm) + ' ppm' : 'N/A'}</span>
-        </div>
-      </div>
-
-      <div class="lightcurve-chart">
-        <h4 style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 0.75rem; text-transform: uppercase; font-family: var(--font-mono);">Folded Transit Lightcurve</h4>
-        ${generateFoldedLightcurveSvg(depth, duration, period)}
-      </div>
-
-      <div style="margin-top: 1.5rem;">
-        <h4 style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 0.5rem; text-transform: uppercase; font-family: var(--font-mono);">Scientific Limits & Constraints</h4>
-        ${
-          candidate.scientific_limits && candidate.scientific_limits.length > 0
-            ? `<ul style="padding-left: 1.25rem; font-size: 0.875rem; color: var(--text-primary); line-height: 1.6;">${candidate.scientific_limits.map(l => `<li>${escapeHtml(l)}</li>`).join('')}</ul>`
-            : '<p style="font-size: 0.875rem; color: var(--text-muted);">No restrictive observational limits flagged.</p>'
-        }
-      </div>
-
-      ${candidate.host_star ? `
-        <div style="margin-top: 1.5rem; padding: 1rem; background: var(--bg-card); border-radius: var(--radius-sm);">
-          <h4 style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 0.5rem; text-transform: uppercase; font-family: var(--font-mono);">Host Star Properties</h4>
-          <p style="font-size: 0.875rem;"><strong>Primary Name:</strong> ${escapeHtml(candidate.host_star.primary_name)} | <strong>RA:</strong> ${candidate.host_star.ra_deg.toFixed(4)}° | <strong>Dec:</strong> ${candidate.host_star.dec_deg.toFixed(4)}°</p>
-          <p style="font-size: 0.8125rem; color: var(--text-muted); margin-top: 0.25rem;"><strong>TIC:</strong> ${escapeHtml(candidate.host_star.tic_id || 'N/A')} | <strong>Gaia DR3:</strong> ${escapeHtml(candidate.host_star.gaia_dr3_id || 'N/A')}</p>
-          ${candidate.host_star.aliases && candidate.host_star.aliases.length ? `<p style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem;"><strong>Aliases:</strong> ${candidate.host_star.aliases.map(a => escapeHtml(a)).join(', ')}</p>` : ''}
-        </div>
-      ` : ''}
-    `;
-
-    document.getElementById('modal-close')?.addEventListener('click', closeModal);
-    document.getElementById('copy-candidate-link')?.addEventListener('click', (e) => {
-      navigator.clipboard.writeText(directUrl).then(() => {
-        e.target.textContent = '✓ Copied!';
-        setTimeout(() => { e.target.textContent = '📋 Copy Link'; }, 2000);
-      });
-    });
+    if (seq !== detailState.requestSeq) return;
+    detailState.candidate = candidate;
+    content.innerHTML = renderDossier(candidate);
+    bindDossier(candidate);
+    let stored = null;
+    try { stored = localStorage.getItem('detail-view'); } catch (e) { /* storage unavailable */ }
+    showDetailView(requestedView || stored || 'transit', false);
   } catch (err) {
+    if (seq !== detailState.requestSeq) return;
     content.innerHTML = `
       <div style="color: var(--accent-rose); padding: 2rem; text-align: center;">
         <p>Error loading dossier: ${escapeHtml(err.message)}</p>
@@ -447,8 +441,203 @@ async function openDossierModal(candidateId) {
   }
 }
 
+function renderDossier(c) {
+  const planet = c.planet || {};
+  const star = c.host_star || {};
+  const dispClass = {
+    confirmed_planet: 'badge-confirmed',
+    validated_planet: 'badge-confirmed',
+    planet_candidate: 'badge-candidate',
+    unclassified_transit_like_signal: 'badge-unclassified',
+    false_positive: 'badge-false-positive',
+  }[c.current_disposition] || 'badge-candidate';
+  const otherSources = (c.sources || []).length - (c.primary_source ? 1 : 0);
+  const radiusNote = planet.radius_basis === 'transit_depth' ? 'from depth' : planet.radius_basis === 'catalogue' ? 'published' : '';
+  const aNote = planet.semi_major_axis_basis === 'kepler3_assumed_solar_mass' ? 'assumes 1 M☉' : planet.semi_major_axis_basis ? 'Kepler III' : '';
+
+  const metric = (label, value, note) => `
+    <div class="detail-metric">
+      <span class="metric-label">${label}</span>
+      <span class="metric-val">${value}</span>
+      ${note ? `<span class="metric-note">${note}</span>` : ''}
+    </div>`;
+
+  const sourcesRows = (c.sources || []).map((s) => `
+    <tr>
+      <td>${renderSourceLink(s)}</td>
+      <td>${escapeHtml(s.author_or_team || '—')}</td>
+      <td>${escapeHtml((s.reported_disposition || '—').replace(/_/g, ' '))}</td>
+      <td>${s.commit_sha && s.commit_sha.length >= 7 && s.commit_sha !== 'HEAD' ? `<code>${escapeHtml(s.commit_sha.slice(0, 10))}</code>` : '—'}</td>
+      <td>${s.retrieval_utc ? escapeHtml(s.retrieval_utc.slice(0, 10)) : '—'}</td>
+      <td>${escapeHtml(s.license || '—')}</td>
+    </tr>`).join('');
+
+  const ticLink = star.tic_id ? `<a href="https://exofop.ipac.caltech.edu/tess/target.php?id=${encodeURIComponent(star.tic_id)}" target="_blank" rel="noopener noreferrer">ExoFOP TIC ${escapeHtml(star.tic_id)} ↗</a>` : '';
+  const simbadLink = star.ra_deg !== undefined ? `<a href="https://simbad.cds.unistra.fr/simbad/sim-coo?Coord=${star.ra_deg}+${star.dec_deg}&CooFrame=ICRS&Radius=10&Radius.unit=arcsec" target="_blank" rel="noopener noreferrer">SIMBAD (10″ cone) ↗</a>` : '';
+  const gaiaLink = star.gaia_dr3_id ? `<a href="https://vizier.cds.unistra.fr/viz-bin/VizieR-5?-source=I/355/gaiadr3&Source=${encodeURIComponent(star.gaia_dr3_id)}" target="_blank" rel="noopener noreferrer">Gaia DR3 ${escapeHtml(star.gaia_dr3_id)} ↗</a>` : '';
+
+  return `
+    <div class="modal-header detail-header">
+      <div class="detail-title">
+        <h2>${escapeHtml(c.display_name)}</h2>
+        <div class="detail-subtitle">
+          Host <strong>${escapeHtml(c.target_name || star.primary_name || '—')}</strong>
+          <span class="detail-id">ID ${escapeHtml(c.id)}</span>
+        </div>
+      </div>
+      <div class="detail-actions">
+        <button id="copy-candidate-link" class="tag-pill detail-action" type="button" title="Copy direct link to clipboard">Copy link</button>
+        <a href="#candidate/${encodeURIComponent(c.id)}" target="_blank" rel="noopener" class="tag-pill detail-action" title="Open direct URL in new tab">New tab ↗</a>
+        <button class="modal-close-btn" id="modal-close" aria-label="Close dialog">&times;</button>
+      </div>
+    </div>
+
+    <div class="detail-badges">
+      <span class="badge ${dispClass}">${escapeHtml(c.current_disposition.replace(/_/g, ' '))}</span>
+      <span class="tag-pill">Localisation: ${escapeHtml(c.source_localisation_status)}</span>
+      <span class="tag-pill">Timing: ${escapeHtml(c.timing_consistency_status)}</span>
+    </div>
+
+    <div class="detail-source">
+      <span class="metric-label">Source</span>
+      ${c.primary_source ? renderSourceLink(c.primary_source) : `<span class="source-link">${escapeHtml(c.source_name || 'unknown')}</span>`}
+      ${otherSources > 0 ? `<a class="detail-more" href="#" data-scroll="detail-sources">+${otherSources} more</a>` : ''}
+    </div>
+
+    <div class="detail-metrics">
+      ${metric('Period', fmtValue(c.period_d, 6, 'd'), fmtErr(c.period_d, c.period_err_d, 6, 'd'))}
+      ${metric('Epoch (BJD_TDB)', fmtValue(c.epoch_bjd, 4, ''), fmtErr(c.epoch_bjd, c.epoch_err_d, 4, 'd'))}
+      ${metric('Duration', fmtValue(c.duration_h, 2, 'h'), fmtErr(c.duration_h, planet.duration_err_h, 2, 'h'))}
+      ${metric('Depth', fmtValue(c.depth_ppm, 0, 'ppm'), fmtErr(c.depth_ppm, planet.depth_err_ppm, 0, 'ppm'))}
+      ${metric('Radius', planet.radius_earth ? `${planet.radius_earth.toFixed(2)} R⊕` : 'N/A', radiusNote || (star.radius_rsun ? '' : 'needs stellar radius'))}
+      ${metric('Semi-major axis', planet.semi_major_axis_au ? `${planet.semi_major_axis_au.toFixed(4)} AU` : 'N/A', aNote)}
+    </div>
+
+    <section class="detail-viz" aria-label="Visualisations">
+      <div class="segmented detail-view-tabs" role="tablist">
+        ${DETAIL_VIEWS.map(([k, label]) => `<button type="button" role="tab" data-view="${k}" aria-selected="false">${label}</button>`).join('')}
+      </div>
+      <div id="detail-view-panel" class="detail-view-panel" role="tabpanel"></div>
+    </section>
+
+    <section id="detail-sources" class="detail-section">
+      <h4 class="detail-section-title">Sources &amp; provenance</h4>
+      ${sourcesRows ? `
+        <div class="table-scroll">
+          <table class="viz-table detail-sources-table">
+            <thead><tr><th>Source</th><th>Author / team</th><th>Reported as</th><th>Commit</th><th>Retrieved</th><th>License</th></tr></thead>
+            <tbody>${sourcesRows}</tbody>
+          </table>
+        </div>` : '<p class="detail-muted">No report rows are linked to this signal.</p>'}
+    </section>
+
+    <section class="detail-section">
+      <h4 class="detail-section-title">Scientific limits &amp; constraints</h4>
+      ${c.scientific_limits && c.scientific_limits.length
+        ? `<ul class="detail-limits">${c.scientific_limits.map((l) => `<li>${escapeHtml(l)}</li>`).join('')}</ul>`
+        : '<p class="detail-muted">No restrictive observational limits flagged.</p>'}
+    </section>
+
+    ${c.host_star ? `
+      <section class="detail-section detail-card">
+        <h4 class="detail-section-title">Host star</h4>
+        <div class="detail-metrics compact">
+          ${metric('Name', escapeHtml(star.primary_name))}
+          ${metric('RA / Dec', `${star.ra_deg.toFixed(4)}° / ${star.dec_deg.toFixed(4)}°`)}
+          ${metric('Teff', star.teff_k ? `${Math.round(star.teff_k)} K` : 'N/A')}
+          ${metric('Radius', star.radius_rsun ? `${star.radius_rsun.toFixed(3)} R☉` : 'N/A')}
+          ${metric('Mass', star.mass_msun ? `${star.mass_msun.toFixed(3)} M☉` : 'N/A')}
+          ${metric('Magnitude', star.tess_mag ? `T ${star.tess_mag.toFixed(2)}` : star.v_mag ? `V ${star.v_mag.toFixed(2)}` : 'N/A')}
+        </div>
+        <p class="detail-links">${[ticLink, gaiaLink, simbadLink].filter(Boolean).join('')}</p>
+        ${star.aliases && star.aliases.length ? `<p class="detail-muted"><strong>Aliases:</strong> ${star.aliases.map((a) => escapeHtml(a)).join(', ')}</p>` : ''}
+      </section>
+    ` : ''}
+  `;
+}
+
+function bindDossier(c) {
+  const directUrl = `${window.location.origin}${window.location.pathname}#candidate/${c.id}`;
+  document.getElementById('modal-close')?.addEventListener('click', closeModal);
+  document.getElementById('copy-candidate-link')?.addEventListener('click', (e) => {
+    navigator.clipboard.writeText(directUrl).then(() => {
+      e.target.textContent = 'Copied ✓';
+      setTimeout(() => { e.target.textContent = 'Copy link'; }, 2000);
+    });
+  });
+  document.querySelectorAll('.detail-view-tabs button').forEach((btn) => {
+    btn.addEventListener('click', () => showDetailView(btn.dataset.view, true));
+  });
+  document.querySelectorAll('[data-scroll]').forEach((a) => {
+    a.addEventListener('click', (e) => {
+      e.preventDefault();
+      document.getElementById(a.dataset.scroll)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  });
+}
+
+function chartInputs(c) {
+  const planet = c.planet || {};
+  const star = c.host_star || {};
+  return {
+    id: c.id,
+    display_name: c.display_name,
+    period_d: c.period_d,
+    period_err_d: c.period_err_d,
+    epoch_bjd: c.epoch_bjd,
+    epoch_err_d: c.epoch_err_d,
+    duration_h: c.duration_h,
+    depth_ppm: c.depth_ppm,
+    depth_err_ppm: planet.depth_err_ppm,
+    radius_earth: planet.radius_earth,
+    a_au: planet.semi_major_axis_basis === 'kepler3_catalogue_mass' ? planet.semi_major_axis_au : null,
+    star_radius_rsun: star.radius_rsun,
+    teff_k: star.teff_k,
+    system: c.system || [],
+  };
+}
+
+async function showDetailView(view, updateUrl) {
+  const c = detailState.candidate;
+  const panel = document.getElementById('detail-view-panel');
+  if (!c || !panel) return;
+  if (!DETAIL_VIEWS.some(([k]) => k === view)) view = 'transit';
+  disposeDetailViews();
+  detailState.view = view;
+  try { localStorage.setItem('detail-view', view); } catch (e) { /* storage unavailable */ }
+  document.querySelectorAll('.detail-view-tabs button').forEach((b) => {
+    const active = b.dataset.view === view;
+    b.classList.toggle('active', active);
+    b.setAttribute('aria-selected', String(active));
+  });
+  if (updateUrl) history.replaceState(null, '', `#candidate/${encodeURIComponent(c.id)}?view=${view}`);
+
+  panel.replaceChildren();
+  const inputs = chartInputs(c);
+  if (view === 'transit') window.ExoCharts.renderTransit(panel, inputs);
+  else if (view === 'timing') window.ExoCharts.renderTiming(panel, inputs);
+  else if (view === 'population') window.ExoCharts.renderPopulation(panel, inputs);
+  else if (view === 'system') {
+    panel.innerHTML = '<p class="viz-empty">Loading 3D view…</p>';
+    try {
+      const mod = await import('/static/system3d.js');
+      if (detailState.candidate !== c || detailState.view !== 'system') return;
+      detailState.system3d = mod.mountSystem(panel, {
+        selfId: c.id,
+        starName: c.target_name,
+        star: c.host_star || {},
+        planets: c.system || [],
+      });
+    } catch (err) {
+      panel.innerHTML = `<p class="viz-empty">The 3D view could not start (${escapeHtml(err.message)}). It needs a browser with WebGL.</p>`;
+    }
+  }
+}
+
 function closeModal() {
   const modal = document.getElementById('dossier-modal');
+  disposeDetailViews();
+  detailState.candidate = null;
   if (modal && modal.open) {
     modal.close();
   }
@@ -461,7 +650,9 @@ function initModalBackdrop() {
   const modal = document.getElementById('dossier-modal');
   if (modal) {
     modal.addEventListener('click', (e) => {
-      // If clicking backdrop outside dialog
+      // Backdrop clicks target the <dialog> itself. Keyboard-activated buttons report
+      // (0, 0) coordinates, so the geometry check alone would close the modal.
+      if (e.target !== modal) return;
       const rect = modal.getBoundingClientRect();
       const isInDialog = (rect.top <= e.clientY && e.clientY <= rect.top + rect.height &&
         rect.left <= e.clientX && e.clientX <= rect.left + rect.width);
@@ -471,65 +662,17 @@ function initModalBackdrop() {
     });
     modal.addEventListener('cancel', () => {
       // Escape key pressed
+      disposeDetailViews();
+      detailState.candidate = null;
       if (window.location.hash.startsWith('#candidate/')) {
         history.replaceState(null, '', '#catalog');
       }
     });
   }
-}
-
-// Generate SVG folded transit curve
-function generateFoldedLightcurveSvg(depthPpm, durationH, periodD) {
-  const width = 680;
-  const height = 180;
-  const padding = 40;
-
-  // Normalized transit parameters
-  const depthFraction = (depthPpm / 1_000_000.0);
-  const transitHalfWidthPhase = (durationH / (periodD * 24.0)) / 2.0;
-
-  // Generate synthetic folded data points with scatter
-  const points = [];
-  const numPoints = 80;
-  const phaseMin = -Math.max(0.04, transitHalfWidthPhase * 2.5);
-  const phaseMax = Math.max(0.04, transitHalfWidthPhase * 2.5);
-
-  for (let i = 0; i < numPoints; i++) {
-    const phase = phaseMin + (i / (numPoints - 1)) * (phaseMax - phaseMin);
-    let flux = 1.0;
-    if (Math.abs(phase) < transitHalfWidthPhase) {
-      flux = 1.0 - depthFraction;
-    }
-    const noise = (Math.random() - 0.5) * depthFraction * 0.3;
-    flux += noise;
-
-    const x = padding + ((phase - phaseMin) / (phaseMax - phaseMin)) * (width - 2 * padding);
-    const yMax = 1.0 + depthFraction * 0.5;
-    const yMin = 1.0 - depthFraction * 1.5;
-    const y = padding + ((yMax - flux) / (yMax - yMin)) * (height - 2 * padding);
-    points.push({ x, y });
-  }
-
-  const circles = points.map(p => `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="2.5" fill="rgba(6, 182, 212, 0.7)" />`).join('');
-
-  // Model fit line
-  const xLeftIngress = padding + ((-transitHalfWidthPhase - phaseMin) / (phaseMax - phaseMin)) * (width - 2 * padding);
-  const xRightEgress = padding + ((transitHalfWidthPhase - phaseMin) / (phaseMax - phaseMin)) * (width - 2 * padding);
-  const yOot = padding + ((depthFraction * 0.5) / (depthFraction * 2.0)) * (height - 2 * padding);
-  const yBottom = padding + ((depthFraction * 1.5) / (depthFraction * 2.0)) * (height - 2 * padding);
-
-  const modelPath = `M ${padding} ${yOot} L ${xLeftIngress} ${yOot} L ${xLeftIngress + 6} ${yBottom} L ${xRightEgress - 6} ${yBottom} L ${xRightEgress} ${yOot} L ${width - padding} ${yOot}`;
-
-  return `
-    <svg viewBox="0 0 ${width} ${height}" style="width: 100%; height: auto; display: block;">
-      <line x1="${padding}" y1="${yOot}" x2="${width - padding}" y2="${yOot}" stroke="rgba(255,255,255,0.1)" stroke-dasharray="4" />
-      ${circles}
-      <path d="${modelPath}" fill="none" stroke="#f43f5e" stroke-width="2.5" />
-      <text x="${padding}" y="${height - 10}" fill="var(--text-muted)" font-size="10" font-family="monospace">${phaseMin.toFixed(3)}</text>
-      <text x="${width / 2}" y="${height - 10}" fill="var(--text-muted)" font-size="10" text-anchor="middle" font-family="monospace">Phase 0.0 (Mid-Transit)</text>
-      <text x="${width - padding}" y="${height - 10}" fill="var(--text-muted)" font-size="10" text-anchor="end" font-family="monospace">+${phaseMax.toFixed(3)}</text>
-    </svg>
-  `;
+  // Charts read colours from CSS variables; redraw the open view when the theme flips.
+  new MutationObserver(() => {
+    if (detailState.candidate && detailState.view !== 'system') showDetailView(detailState.view, false);
+  }).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
 }
 
 // --- Observation Queue ---
