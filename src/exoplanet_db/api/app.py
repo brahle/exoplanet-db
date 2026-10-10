@@ -72,6 +72,12 @@ app.add_middleware(
 )
 
 PORTAL_STATIC_DIR = Path(__file__).resolve().parent.parent / "portal" / "static"
+if not (PORTAL_STATIC_DIR / "index.html").exists():
+    for fallback in [Path("/app/static"), Path("/app/src/exoplanet_db/portal/static"), Path("src/exoplanet_db/portal/static")]:
+        if (fallback / "index.html").exists():
+            PORTAL_STATIC_DIR = fallback
+            break
+
 if PORTAL_STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(PORTAL_STATIC_DIR)), name="static")
 

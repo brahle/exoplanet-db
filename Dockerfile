@@ -11,7 +11,8 @@ COPY alembic.ini /src/alembic.ini
 COPY alembic /src/alembic
 
 RUN uv venv /opt/venv --python 3.12 \
- && uv pip install --python /opt/venv/bin/python --no-cache .
+ && uv pip install --python /opt/venv/bin/python --no-cache . \
+ && cp -r /src/src/exoplanet_db/portal/static /opt/venv/lib/python3.12/site-packages/exoplanet_db/portal/
 
 FROM python:3.12-slim
 
@@ -21,6 +22,7 @@ RUN groupadd -r -g 10001 exoplanet && useradd -r -u 10001 -g exoplanet -d /app -
 COPY --from=build /opt/venv /opt/venv
 COPY --from=build --chown=exoplanet:exoplanet /src/alembic.ini /app/alembic.ini
 COPY --from=build --chown=exoplanet:exoplanet /src/alembic /app/alembic
+COPY --from=build --chown=exoplanet:exoplanet /src/src/exoplanet_db/portal/static /app/static
 
 ENV PATH="/opt/venv/bin:$PATH" PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 WORKDIR /app
