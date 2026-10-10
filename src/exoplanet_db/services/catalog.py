@@ -10,6 +10,7 @@ from sqlalchemy.orm import joinedload, selectinload
 from exoplanet_db.models import (
     EphemerisFit,
     PublishedSnapshot,
+    Report,
     Signal,
     Target,
 )
@@ -84,6 +85,8 @@ class CatalogService:
 
     async def list_candidates(
         self,
+        search: str | None = None,
+        source: str | None = None,
         disposition: str | None = None,
         min_period_d: float | None = None,
         max_period_d: float | None = None,
@@ -91,10 +94,29 @@ class CatalogService:
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[Signal], int]:
-        query = select(Signal).options(
+        query = select(Signal).join(Signal.target).options(
             joinedload(Signal.target),
         )
-        count_query = select(func.count(Signal.id))
+        count_query = select(func.count(Signal.id)).join(Signal.target)
+
+        if search:
+            s_pat = f"%{search.strip()}%"
+            search_cond = (
+                Signal.display_name.ilike(s_pat)
+                | Target.primary_name.ilike(s_pat)
+                | Target.tic_id.ilike(s_pat)
+                | Target.gaia_dr3_id.ilike(s_pat)
+            )
+            query = query.where(search_cond)
+            count_query = count_query.where(search_cond)
+
+        if source:
+            if source == "nasa_pscomppars":
+                query = query.where(Signal.current_disposition == "confirmed_planet")
+                count_query = count_query.where(Signal.current_disposition == "confirmed_planet")
+            elif "git" in source:
+                query = query.where(Signal.current_disposition != "confirmed_planet")
+                count_query = count_query.where(Signal.current_disposition != "confirmed_planet")
 
         if disposition:
             query = query.where(Signal.current_disposition == disposition)

@@ -6,6 +6,10 @@ document.addEventListener('DOMContentLoaded', () => {
   initCatalog();
   initObservationQueue();
   initSnapshots();
+  initModalBackdrop();
+
+  // Initial routing
+  handleRoute();
 });
 
 // --- Theme Management ---
@@ -24,30 +28,122 @@ function initTheme() {
   }
 }
 
-// --- Tab Switching ---
+// --- Navigation Tabs & URL Hash Routing ---
 function initTabs() {
+  const tabBtns = document.querySelectorAll('.tab-btn');
+
+  tabBtns.forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      // Allow browser to natively handle Ctrl+click, Cmd+click, Shift+click, or middle click (button === 1)
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.button === 1) {
+        return;
+      }
+      e.preventDefault();
+      const href = btn.getAttribute('href') || '#catalog';
+      if (window.location.hash !== href) {
+        history.pushState(null, '', href);
+      }
+      handleRoute();
+    });
+  });
+
+  window.addEventListener('popstate', handleRoute);
+  window.addEventListener('hashchange', handleRoute);
+}
+
+function switchTab(tabName, updateUrl = false) {
   const tabBtns = document.querySelectorAll('.tab-btn');
   const tabContents = document.querySelectorAll('.tab-content');
 
-  tabBtns.forEach(btn => {
-    btn.addEventListener('click', () => {
-      const targetTab = btn.getAttribute('data-tab');
-
-      tabBtns.forEach(b => b.classList.remove('active'));
-      tabContents.forEach(c => c.classList.remove('active'));
-
-      btn.classList.add('active');
-      const content = document.getElementById(`${targetTab}-content`);
-      if (content) content.classList.add('active');
-    });
+  tabBtns.forEach(b => {
+    b.classList.toggle('active', b.getAttribute('data-tab') === tabName);
   });
+  tabContents.forEach(c => {
+    c.classList.toggle('active', c.id === `${tabName}-content`);
+  });
+
+  if (updateUrl) {
+    const tabToHash = {
+      candidates: '#catalog',
+      queue: '#queue',
+      snapshots: '#snapshots',
+      agent: '#agent'
+    };
+    if (tabToHash[tabName] && window.location.hash !== tabToHash[tabName]) {
+      history.pushState(null, '', tabToHash[tabName]);
+    }
+  }
+}
+
+function handleRoute() {
+  const hash = window.location.hash || '#catalog';
+
+  // 1. Direct candidate route: #candidate/<candidateId>
+  if (hash.startsWith('#candidate/')) {
+    const candidateId = hash.replace('#candidate/', '').trim();
+    switchTab('candidates', false);
+    if (candidateId) {
+      openDossierModal(candidateId);
+    }
+    return;
+  }
+
+  // 2. Close modal if navigating away from candidate
+  const modal = document.getElementById('dossier-modal');
+  if (modal && modal.open) {
+    modal.close();
+  }
+
+  // 3. Main tabs: #queue, #snapshots, #agent, #catalog
+  if (hash.startsWith('#queue')) {
+    switchTab('queue', false);
+  } else if (hash.startsWith('#snapshots')) {
+    switchTab('snapshots', false);
+  } else if (hash.startsWith('#agent')) {
+    switchTab('agent', false);
+  } else {
+    // Default catalog tab
+    switchTab('candidates', false);
+
+    // Parse query params if present in hash: #catalog?search=...&source=...
+    const qIndex = hash.indexOf('?');
+    if (qIndex !== -1) {
+      const params = new URLSearchParams(hash.slice(qIndex + 1));
+      let shouldReload = false;
+      if (params.has('search')) {
+        const sInput = document.getElementById('catalog-search');
+        if (sInput && sInput.value !== params.get('search')) {
+          sInput.value = params.get('search');
+          shouldReload = true;
+        }
+      }
+      if (params.has('source')) {
+        const srcSelect = document.getElementById('source-filter');
+        if (srcSelect && srcSelect.value !== params.get('source')) {
+          srcSelect.value = params.get('source');
+          shouldReload = true;
+        }
+      }
+      if (params.has('disposition')) {
+        const dSelect = document.getElementById('disposition-filter');
+        if (dSelect && dSelect.value !== params.get('disposition')) {
+          dSelect.value = params.get('disposition');
+          shouldReload = true;
+        }
+      }
+      if (shouldReload) {
+        loadCandidates();
+      }
+    }
+  }
 }
 
 // --- Candidates Catalog ---
-let candidatesData = [];
+let currentQueryId = 0;
 
 async function initCatalog() {
   const searchInput = document.getElementById('catalog-search');
+  const sourceFilter = document.getElementById('source-filter');
   const dispositionFilter = document.getElementById('disposition-filter');
 
   await loadCandidates();
@@ -56,61 +152,94 @@ async function initCatalog() {
     let debounceTimer;
     searchInput.addEventListener('input', () => {
       clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(() => filterAndRenderCandidates(), 250);
+      debounceTimer = setTimeout(() => {
+        syncCatalogUrl();
+        loadCandidates();
+      }, 300);
+    });
+  }
+
+  if (sourceFilter) {
+    sourceFilter.addEventListener('change', () => {
+      syncCatalogUrl();
+      loadCandidates();
     });
   }
 
   if (dispositionFilter) {
-    dispositionFilter.addEventListener('change', () => filterAndRenderCandidates());
+    dispositionFilter.addEventListener('change', () => {
+      syncCatalogUrl();
+      loadCandidates();
+    });
+  }
+}
+
+function syncCatalogUrl() {
+  const searchVal = (document.getElementById('catalog-search')?.value || '').trim();
+  const sourceVal = document.getElementById('source-filter')?.value || 'all';
+  const dispVal = document.getElementById('disposition-filter')?.value || 'all';
+
+  const params = new URLSearchParams();
+  if (searchVal) params.set('search', searchVal);
+  if (sourceVal !== 'all') params.set('source', sourceVal);
+  if (dispVal !== 'all') params.set('disposition', dispVal);
+
+  const queryStr = params.toString();
+  const newHash = queryStr ? `#catalog?${queryStr}` : '#catalog';
+  if (window.location.hash !== newHash) {
+    history.replaceState(null, '', newHash);
   }
 }
 
 async function loadCandidates() {
   const grid = document.getElementById('candidate-grid');
   if (!grid) return;
-  grid.innerHTML = '<div style="color: var(--text-muted); grid-column: 1/-1; text-align: center; padding: 2rem;">Loading planetary signals and candidates...</div>';
 
+  const searchVal = (document.getElementById('catalog-search')?.value || '').trim();
+  const sourceVal = document.getElementById('source-filter')?.value || 'all';
+  const dispVal = document.getElementById('disposition-filter')?.value || 'all';
+
+  grid.innerHTML = '<div style="color: var(--text-muted); grid-column: 1/-1; text-align: center; padding: 2.5rem;">Loading planetary signals and candidates...</div>';
+
+  const thisQuery = ++currentQueryId;
   try {
-    const res = await fetch('/v1/candidates?limit=100');
+    const params = new URLSearchParams({ limit: '100' });
+    if (searchVal) params.set('search', searchVal);
+    if (sourceVal !== 'all') params.set('source', sourceVal);
+    if (dispVal !== 'all') params.set('disposition', dispVal);
+
+    const res = await fetch(`/v1/candidates?${params.toString()}`);
     if (!res.ok) throw new Error(`HTTP error ${res.status}`);
     const data = await res.json();
-    candidatesData = data.items || [];
-    filterAndRenderCandidates();
-  } catch (err) {
-    grid.innerHTML = `<div style="color: var(--accent-rose); grid-column: 1/-1; text-align: center;">Failed to load catalog: ${err.message}</div>`;
-  }
-}
 
-function filterAndRenderCandidates() {
-  const searchVal = (document.getElementById('catalog-search')?.value || '').toLowerCase().trim();
-  const dispVal = document.getElementById('disposition-filter')?.value || 'all';
-  const grid = document.getElementById('candidate-grid');
-  if (!grid) return;
+    if (thisQuery !== currentQueryId) return; // Stale response discarded
 
-  const filtered = candidatesData.filter(c => {
-    const matchesSearch = !searchVal || 
-      c.display_name.toLowerCase().includes(searchVal) || 
-      c.id.toLowerCase().includes(searchVal) ||
-      (c.target_id && c.target_id.toLowerCase().includes(searchVal));
-    
-    const matchesDisp = dispVal === 'all' || c.current_disposition === dispVal;
-    return matchesSearch && matchesDisp;
-  });
+    const candidates = data.items || [];
+    if (candidates.length === 0) {
+      grid.innerHTML = '<div style="color: var(--text-muted); grid-column: 1/-1; text-align: center; padding: 3rem;">No candidates matched your search criteria.</div>';
+      return;
+    }
 
-  if (filtered.length === 0) {
-    grid.innerHTML = '<div style="color: var(--text-muted); grid-column: 1/-1; text-align: center; padding: 2rem;">No candidates matched your search criteria.</div>';
-    return;
-  }
+    grid.innerHTML = candidates.map(c => renderCandidateCard(c)).join('');
 
-  grid.innerHTML = filtered.map(c => renderCandidateCard(c)).join('');
-
-  // Attach card click handlers for detailed dossier
-  document.querySelectorAll('.candidate-card').forEach(card => {
-    card.addEventListener('click', () => {
-      const candidateId = card.getAttribute('data-id');
-      openDossierModal(candidateId);
+    // Attach card click handlers: preserve modifier keys (Ctrl+click, Cmd+click, Shift+click, middle-click)
+    document.querySelectorAll('.candidate-card').forEach(card => {
+      card.addEventListener('click', (e) => {
+        if (e.metaKey || e.ctrlKey || e.shiftKey || e.button === 1) {
+          // Native browser behavior opens link in a new tab!
+          return;
+        }
+        e.preventDefault();
+        const candidateId = card.getAttribute('data-id');
+        history.pushState(null, '', `#candidate/${candidateId}`);
+        openDossierModal(candidateId);
+      });
     });
-  });
+  } catch (err) {
+    if (thisQuery === currentQueryId) {
+      grid.innerHTML = `<div style="color: var(--accent-rose); grid-column: 1/-1; text-align: center; padding: 2rem;">Failed to load catalog: ${escapeHtml(err.message)}</div>`;
+    }
+  }
 }
 
 function renderCandidateCard(c) {
@@ -123,15 +252,21 @@ function renderCandidateCard(c) {
   }[c.current_disposition] || 'badge-candidate';
 
   const dispLabel = c.current_disposition.replace(/_/g, ' ');
+  const hostLabel = c.target_name || (c.tic_id ? `TIC ${c.tic_id}` : c.target_id);
+  const src = c.source_name || 'nasa_pscomppars';
+  const srcClass = src.startsWith('git') ? 'source-git' : (src.startsWith('nasa') ? 'source-nasa' : '');
 
   return `
-    <article class="candidate-card" data-id="${c.id}">
+    <a href="#candidate/${encodeURIComponent(c.id)}" class="candidate-card" data-id="${escapeHtml(c.id)}">
       <div class="card-header">
         <div>
           <h3 class="candidate-name">${escapeHtml(c.display_name)}</h3>
-          <span class="host-name">Target: ${escapeHtml(c.target_id)}</span>
+          <span class="host-name">Host: <strong>${escapeHtml(hostLabel)}</strong></span>
         </div>
-        <span class="badge ${dispClass}">${dispLabel}</span>
+        <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 0.35rem;">
+          <span class="badge ${dispClass}">${dispLabel}</span>
+          <span class="source-badge ${srcClass}" title="Source: ${escapeHtml(src)}">${escapeHtml(src)}</span>
+        </div>
       </div>
 
       <div class="metric-row">
@@ -154,7 +289,7 @@ function renderCandidateCard(c) {
         <span class="tag-pill">Timing: ${escapeHtml(c.timing_consistency_status)}</span>
         ${c.scientific_limits && c.scientific_limits.length ? `<span class="tag-pill">${c.scientific_limits.length} Limits</span>` : ''}
       </div>
-    </article>
+    </a>
   `;
 }
 
@@ -164,25 +299,33 @@ async function openDossierModal(candidateId) {
   const content = document.getElementById('dossier-modal-content');
   if (!modal || !content) return;
 
-  content.innerHTML = '<div style="text-align: center; padding: 2rem;">Loading candidate dossier and lightcurve...</div>';
-  modal.showModal();
+  content.innerHTML = '<div style="text-align: center; padding: 3rem; color: var(--text-secondary);">Loading candidate dossier and lightcurve...</div>';
+  if (!modal.open) {
+    modal.showModal();
+  }
 
   try {
-    const res = await fetch(`/v1/candidates/${candidateId}`);
+    const res = await fetch(`/v1/candidates/${encodeURIComponent(candidateId)}`);
     if (!res.ok) throw new Error(`HTTP error ${res.status}`);
     const candidate = await res.json();
 
     const depth = candidate.depth_ppm || 5000;
     const duration = candidate.duration_h || 2.5;
     const period = candidate.period_d || 3.0;
+    const directUrl = `${window.location.origin}${window.location.pathname}#candidate/${candidate.id}`;
 
     content.innerHTML = `
       <div class="modal-header">
         <div>
           <h2 style="font-size: 1.5rem; font-weight: 700;">${escapeHtml(candidate.display_name)}</h2>
-          <span style="color: var(--text-secondary); font-family: var(--font-mono); font-size: 0.875rem;">ID: ${escapeHtml(candidate.id)}</span>
+          <span style="color: var(--text-secondary); font-family: var(--font-mono); font-size: 0.8125rem;">ID: ${escapeHtml(candidate.id)}</span>
+          ${candidate.source_name ? `<span class="source-badge" style="margin-left: 0.5rem;">${escapeHtml(candidate.source_name)}</span>` : ''}
         </div>
-        <button class="modal-close-btn" id="modal-close">&times;</button>
+        <div style="display: flex; align-items: center; gap: 0.5rem;">
+          <button id="copy-candidate-link" class="tag-pill" style="cursor: pointer; background: var(--bg-card); border: 1px solid var(--border-color); color: var(--text-primary);" title="Copy direct link to clipboard">📋 Copy Link</button>
+          <a href="#candidate/${encodeURIComponent(candidate.id)}" target="_blank" rel="noopener" class="tag-pill" style="text-decoration: none; background: var(--bg-card); border: 1px solid var(--border-color); color: var(--accent-cyan);" title="Open direct URL in new tab">↗ New Tab</a>
+          <button class="modal-close-btn" id="modal-close" aria-label="Close dialog">&times;</button>
+        </div>
       </div>
 
       <div style="margin-bottom: 1rem;">
@@ -215,7 +358,7 @@ async function openDossierModal(candidateId) {
         <h4 style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 0.5rem; text-transform: uppercase; font-family: var(--font-mono);">Scientific Limits & Constraints</h4>
         ${
           candidate.scientific_limits && candidate.scientific_limits.length > 0
-            ? `<ul style="padding-left: 1.25rem; font-size: 0.875rem; color: var(--text-primary);">${candidate.scientific_limits.map(l => `<li>${escapeHtml(l)}</li>`).join('')}</ul>`
+            ? `<ul style="padding-left: 1.25rem; font-size: 0.875rem; color: var(--text-primary); line-height: 1.6;">${candidate.scientific_limits.map(l => `<li>${escapeHtml(l)}</li>`).join('')}</ul>`
             : '<p style="font-size: 0.875rem; color: var(--text-muted);">No restrictive observational limits flagged.</p>'
         }
       </div>
@@ -225,13 +368,56 @@ async function openDossierModal(candidateId) {
           <h4 style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 0.5rem; text-transform: uppercase; font-family: var(--font-mono);">Host Star Properties</h4>
           <p style="font-size: 0.875rem;"><strong>Primary Name:</strong> ${escapeHtml(candidate.host_star.primary_name)} | <strong>RA:</strong> ${candidate.host_star.ra_deg.toFixed(4)}° | <strong>Dec:</strong> ${candidate.host_star.dec_deg.toFixed(4)}°</p>
           <p style="font-size: 0.8125rem; color: var(--text-muted); margin-top: 0.25rem;"><strong>TIC:</strong> ${escapeHtml(candidate.host_star.tic_id || 'N/A')} | <strong>Gaia DR3:</strong> ${escapeHtml(candidate.host_star.gaia_dr3_id || 'N/A')}</p>
+          ${candidate.host_star.aliases && candidate.host_star.aliases.length ? `<p style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem;"><strong>Aliases:</strong> ${candidate.host_star.aliases.map(a => escapeHtml(a)).join(', ')}</p>` : ''}
         </div>
       ` : ''}
     `;
 
-    document.getElementById('modal-close')?.addEventListener('click', () => modal.close());
+    document.getElementById('modal-close')?.addEventListener('click', closeModal);
+    document.getElementById('copy-candidate-link')?.addEventListener('click', (e) => {
+      navigator.clipboard.writeText(directUrl).then(() => {
+        e.target.textContent = '✓ Copied!';
+        setTimeout(() => { e.target.textContent = '📋 Copy Link'; }, 2000);
+      });
+    });
   } catch (err) {
-    content.innerHTML = `<div style="color: var(--accent-rose); padding: 2rem;">Error loading dossier: ${err.message}</div>`;
+    content.innerHTML = `
+      <div style="color: var(--accent-rose); padding: 2rem; text-align: center;">
+        <p>Error loading dossier: ${escapeHtml(err.message)}</p>
+        <button class="btn-primary" style="margin-top: 1rem;" onclick="closeModal()">Close</button>
+      </div>
+    `;
+  }
+}
+
+function closeModal() {
+  const modal = document.getElementById('dossier-modal');
+  if (modal && modal.open) {
+    modal.close();
+  }
+  if (window.location.hash.startsWith('#candidate/')) {
+    history.replaceState(null, '', '#catalog');
+  }
+}
+
+function initModalBackdrop() {
+  const modal = document.getElementById('dossier-modal');
+  if (modal) {
+    modal.addEventListener('click', (e) => {
+      // If clicking backdrop outside dialog
+      const rect = modal.getBoundingClientRect();
+      const isInDialog = (rect.top <= e.clientY && e.clientY <= rect.top + rect.height &&
+        rect.left <= e.clientX && e.clientX <= rect.left + rect.width);
+      if (!isInDialog) {
+        closeModal();
+      }
+    });
+    modal.addEventListener('cancel', () => {
+      // Escape key pressed
+      if (window.location.hash.startsWith('#candidate/')) {
+        history.replaceState(null, '', '#catalog');
+      }
+    });
   }
 }
 
@@ -255,10 +441,8 @@ function generateFoldedLightcurveSvg(depthPpm, durationH, periodD) {
     const phase = phaseMin + (i / (numPoints - 1)) * (phaseMax - phaseMin);
     let flux = 1.0;
     if (Math.abs(phase) < transitHalfWidthPhase) {
-      // Trapezoid dip
       flux = 1.0 - depthFraction;
     }
-    // Add tiny simulated scatter (~0.15 depth)
     const noise = (Math.random() - 0.5) * depthFraction * 0.3;
     flux += noise;
 
@@ -281,13 +465,9 @@ function generateFoldedLightcurveSvg(depthPpm, durationH, periodD) {
 
   return `
     <svg viewBox="0 0 ${width} ${height}" style="width: 100%; height: auto; display: block;">
-      <!-- Grid / Baseline -->
       <line x1="${padding}" y1="${yOot}" x2="${width - padding}" y2="${yOot}" stroke="rgba(255,255,255,0.1)" stroke-dasharray="4" />
-      <!-- Points -->
       ${circles}
-      <!-- Model Fit -->
       <path d="${modelPath}" fill="none" stroke="#f43f5e" stroke-width="2.5" />
-      <!-- Phase labels -->
       <text x="${padding}" y="${height - 10}" fill="var(--text-muted)" font-size="10" font-family="monospace">${phaseMin.toFixed(3)}</text>
       <text x="${width / 2}" y="${height - 10}" fill="var(--text-muted)" font-size="10" text-anchor="middle" font-family="monospace">Phase 0.0 (Mid-Transit)</text>
       <text x="${width - padding}" y="${height - 10}" fill="var(--text-muted)" font-size="10" text-anchor="end" font-family="monospace">+${phaseMax.toFixed(3)}</text>
@@ -311,7 +491,6 @@ async function initObservationQueue() {
     });
   }
 
-  // Pre-fill dates: start today, end +7 days
   const now = new Date();
   const nextWeek = new Date(now.getTime() + 7 * 24 * 3600 * 1000);
   const startInput = document.getElementById('obs-start');
@@ -322,34 +501,44 @@ async function initObservationQueue() {
   if (form) {
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
-      await calculateQueue();
+      await calculateObservationQueue();
     });
   }
 }
 
-async function calculateQueue() {
+async function calculateObservationQueue() {
   const container = document.getElementById('queue-results-container');
   if (!container) return;
 
   const lat = document.getElementById('obs-lat').value;
   const lon = document.getElementById('obs-lon').value;
-  const start = document.getElementById('obs-start').value;
-  const end = document.getElementById('obs-end').value;
+  const startVal = document.getElementById('obs-start').value;
+  const endVal = document.getElementById('obs-end').value;
   const minPriority = document.getElementById('obs-min-priority').value || '0.0';
 
-  container.innerHTML = '<div style="color: var(--text-muted); text-align: center; padding: 2rem;">Computing coherent topocentric ephemerides and observability metrics...</div>';
+  if (!startVal || !endVal) return;
+
+  container.innerHTML = '<div style="color: var(--text-muted); text-align: center; padding: 2rem;">Computing topocentric ephemerides and transit visibility...</div>';
 
   try {
-    const startIso = new Date(start).toISOString();
-    const endIso = new Date(end).toISOString();
+    const startIso = new Date(startVal).toISOString();
+    const endIso = new Date(endVal).toISOString();
 
-    const url = `/v1/observations/queue?lat=${lat}&lon=${lon}&start_time=${encodeURIComponent(startIso)}&end_time=${encodeURIComponent(endIso)}&min_priority=${minPriority}`;
-    const res = await fetch(url);
+    const params = new URLSearchParams({
+      lat: lat,
+      lon: lon,
+      start_time: startIso,
+      end_time: endIso,
+      min_priority: minPriority,
+      limit: '50'
+    });
+
+    const res = await fetch(`/v1/observations/queue?${params.toString()}`);
     if (!res.ok) throw new Error(`HTTP error ${res.status}`);
     const data = await res.json();
 
-    if (!data.items || data.items.length === 0) {
-      container.innerHTML = '<div style="color: var(--text-muted); text-align: center; padding: 2rem;">No observable transit windows found for this location and time window.</div>';
+    if (data.items.length === 0) {
+      container.innerHTML = '<div style="color: var(--text-muted); text-align: center; padding: 2rem;">No observable transit windows found for the selected window and coordinates.</div>';
       return;
     }
 
@@ -360,11 +549,11 @@ async function calculateQueue() {
             <tr>
               <th>Priority</th>
               <th>Target & Signal</th>
-              <th>Transit Mid-Time (UTC)</th>
+              <th>Mid-Transit (UTC)</th>
               <th>Duration</th>
               <th>Timing Unc.</th>
               <th>Altitude / Airmass</th>
-              <th>Night / Moon</th>
+              <th>Status</th>
             </tr>
           </thead>
           <tbody>
@@ -372,15 +561,17 @@ async function calculateQueue() {
               <tr>
                 <td><span class="score-badge">${item.priority_score.toFixed(2)}</span></td>
                 <td>
-                  <strong>${escapeHtml(item.target_name)}</strong><br>
-                  <small style="color: var(--text-muted);">${escapeHtml(item.signal_name)}</small>
+                  <a href="#candidate/${encodeURIComponent(item.signal_id)}" class="queue-link">
+                    <strong>${escapeHtml(item.target_name)}</strong><br>
+                    <small style="color: var(--text-muted);">${escapeHtml(item.signal_name)}</small>
+                  </a>
                 </td>
                 <td>
                   <span style="font-family: var(--font-mono);">${new Date(item.transit_mid_utc).toUTCString()}</span>
                 </td>
                 <td>${item.duration_h.toFixed(2)} h</td>
                 <td>±${item.timing_uncertainty_min.toFixed(1)} min</td>
-                <td>${item.target_altitude_deg}° (z=${item.target_airmass.toFixed(2)})</td>
+                <td>${item.target_altitude_deg.toFixed(1)}° (z=${item.target_airmass.toFixed(2)})</td>
                 <td>
                   ${item.is_observable ? '<span style="color: var(--accent-emerald);">● Observable</span>' : '<span style="color: var(--accent-rose);">○ Daylight/Moon</span>'}
                 </td>
@@ -390,8 +581,21 @@ async function calculateQueue() {
         </table>
       </div>
     `;
+
+    // Attach click listeners to queue candidate links with modifier key support
+    container.querySelectorAll('.queue-link').forEach(link => {
+      link.addEventListener('click', (e) => {
+        if (e.metaKey || e.ctrlKey || e.shiftKey || e.button === 1) return;
+        e.preventDefault();
+        const href = link.getAttribute('href');
+        if (href) {
+          history.pushState(null, '', href);
+          handleRoute();
+        }
+      });
+    });
   } catch (err) {
-    container.innerHTML = `<div style="color: var(--accent-rose); text-align: center; padding: 2rem;">Error computing observation queue: ${err.message}</div>`;
+    container.innerHTML = `<div style="color: var(--accent-rose); text-align: center; padding: 2rem;">Error computing observation queue: ${escapeHtml(err.message)}</div>`;
   }
 }
 
@@ -420,6 +624,7 @@ async function initSnapshots() {
               <th>Commit SHA</th>
               <th>Record Count</th>
               <th>Status</th>
+              <th>Action</th>
             </tr>
           </thead>
           <tbody>
@@ -430,14 +635,32 @@ async function initSnapshots() {
                 <td><code>${s.commit_sha ? s.commit_sha.slice(0, 10) : 'HEAD'}</code></td>
                 <td>${s.record_count.toLocaleString()}</td>
                 <td><span class="badge badge-confirmed">${escapeHtml(s.status)}</span></td>
+                <td>
+                  <a href="#catalog?source=${encodeURIComponent(s.source_name)}" class="queue-link" style="font-size: 0.8125rem;">
+                    Filter in Catalog ↗
+                  </a>
+                </td>
               </tr>
             `).join('')}
           </tbody>
         </table>
       </div>
     `;
+
+    // Attach click listeners to snapshot action links
+    container.querySelectorAll('.queue-link').forEach(link => {
+      link.addEventListener('click', (e) => {
+        if (e.metaKey || e.ctrlKey || e.shiftKey || e.button === 1) return;
+        e.preventDefault();
+        const href = link.getAttribute('href');
+        if (href) {
+          history.pushState(null, '', href);
+          handleRoute();
+        }
+      });
+    });
   } catch (err) {
-    container.innerHTML = `<div style="color: var(--accent-rose); padding: 1.5rem;">Error loading snapshots: ${err.message}</div>`;
+    container.innerHTML = `<div style="color: var(--accent-rose); padding: 1.5rem;">Error loading snapshots: ${escapeHtml(err.message)}</div>`;
   }
 }
 

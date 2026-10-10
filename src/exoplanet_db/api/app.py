@@ -91,6 +91,22 @@ ATTRIBUTION_METADATA = {
 }
 
 
+def resolve_source_name(signal: Any) -> str:
+    limits = getattr(signal, "scientific_limits", None) or []
+    for l in limits:
+        if "NASA" in l:
+            return "nasa_pscomppars"
+        if "Absence from checked" in l or "Conditional diagnostic" in l:
+            return "git:brahle/exoplanet-candidates"
+        if "ExoFOP" in l:
+            return "exofop_tess_ctoi"
+        if "eumemic" in l:
+            return "eumemic_catalog"
+    if getattr(signal, "current_disposition", "") == "confirmed_planet":
+        return "nasa_pscomppars"
+    return "git:brahle/exoplanet-candidates"
+
+
 # --- Pydantic API Response Models ---
 
 
@@ -109,6 +125,9 @@ class TargetResponse(BaseModel):
 class CandidateSummary(BaseModel):
     id: str
     target_id: str
+    target_name: str | None = None
+    tic_id: str | None = None
+    source_name: str | None = None
     display_name: str
     period_d: float
     period_err_d: float | None = None
@@ -229,6 +248,9 @@ async def get_system(
         CandidateSummary(
             id=s.id,
             target_id=s.target_id,
+            target_name=target.primary_name,
+            tic_id=target.tic_id,
+            source_name=resolve_source_name(s),
             display_name=s.display_name,
             period_d=s.primary_period_d,
             period_err_d=s.primary_period_err_d,
@@ -259,6 +281,8 @@ async def get_system(
 
 @app.get("/v1/candidates", response_model=PaginatedResponse, tags=["Catalog"])
 async def list_candidates(
+    search: str | None = Query(None, description="Search by candidate name, target name, TIC ID, or Gaia ID"),
+    source: str | None = Query(None, description="Filter by data source (e.g. nasa_pscomppars, git:brahle/exoplanet-candidates)"),
     disposition: str | None = Query(None, description="Filter by scientific disposition"),
     min_period_d: float | None = Query(None, ge=0.0),
     max_period_d: float | None = Query(None, ge=0.0),
@@ -270,6 +294,8 @@ async def list_candidates(
     CANDIDATES_SEARCH_TOTAL.inc()
     service = CatalogService(session)
     signals, total = await service.list_candidates(
+        search=search,
+        source=source,
         disposition=disposition,
         min_period_d=min_period_d,
         max_period_d=max_period_d,
@@ -281,6 +307,9 @@ async def list_candidates(
         CandidateSummary(
             id=s.id,
             target_id=s.target_id,
+            target_name=s.target.primary_name if s.target else None,
+            tic_id=s.target.tic_id if s.target else None,
+            source_name=resolve_source_name(s),
             display_name=s.display_name,
             period_d=s.primary_period_d,
             period_err_d=s.primary_period_err_d,
@@ -324,6 +353,9 @@ async def get_candidate(
     return CandidateDetailResponse(
         id=signal.id,
         target_id=signal.target_id,
+        target_name=signal.target.primary_name if signal.target else None,
+        tic_id=signal.target.tic_id if signal.target else None,
+        source_name=resolve_source_name(signal),
         display_name=signal.display_name,
         period_d=signal.primary_period_d,
         period_err_d=signal.primary_period_err_d,

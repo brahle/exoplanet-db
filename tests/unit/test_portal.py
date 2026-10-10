@@ -15,6 +15,9 @@ async def test_human_portal_endpoints():
         assert res.status_code == 200
         assert "text/html" in res.headers.get("content-type", "")
         assert "Exoplanet DB" in res.text
+        assert 'href="#catalog"' in res.text
+        assert 'href="#queue"' in res.text
+        assert 'id="source-filter"' in res.text
         assert "Creative Commons Attribution 4.0 International" in res.text
 
         # 2. Test static CSS
@@ -22,6 +25,7 @@ async def test_human_portal_endpoints():
         assert res_css.status_code == 200
         assert "text/css" in res_css.headers.get("content-type", "")
         assert "--accent-cyan" in res_css.text
+        assert ".source-badge" in res_css.text
 
         # 3. Test static JS
         res_js = await client.get("/static/portal.js")
@@ -29,4 +33,5 @@ async def test_human_portal_endpoints():
         assert "application/javascript" in res_js.headers.get(
             "content-type", ""
         ) or "text/javascript" in res_js.headers.get("content-type", "")
-        assert "generateFoldedLightcurveSvg" in res_js.text
+        assert "handleRoute" in res_js.text
+        assert "openDossierModal" in res_js.text
