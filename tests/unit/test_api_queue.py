@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -102,7 +103,10 @@ async def test_observation_queue_api(test_session: AsyncSession):
         data = response.json()
         assert "items" in data
         assert "attribution" in data
-        assert data["attribution"]["community_data_license"] == "CC BY 4.0 (Creative Commons Attribution 4.0 International)"
+        assert (
+            data["attribution"]["community_data_license"]
+            == "CC BY 4.0 (Creative Commons Attribution 4.0 International)"
+        )
         assert len(data["items"]) >= 1
 
         top_item = data["items"][0]

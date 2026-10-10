@@ -3,11 +3,14 @@ from __future__ import annotations
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import prometheus_client
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -67,6 +70,19 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+PORTAL_STATIC_DIR = Path(__file__).resolve().parent.parent / "portal" / "static"
+if PORTAL_STATIC_DIR.exists():
+    app.mount("/static", StaticFiles(directory=str(PORTAL_STATIC_DIR)), name="static")
+
+
+@app.get("/", response_class=HTMLResponse, tags=["Portal"], include_in_schema=False)
+async def serve_portal():
+    index_file = PORTAL_STATIC_DIR / "index.html"
+    if index_file.exists():
+        return FileResponse(index_file)
+    return HTMLResponse("<h1>Exoplanet DB Portal</h1>")
+
 
 ATTRIBUTION_METADATA = {
     "nasa_exoplanet_archive": NASA_ACKNOWLEDGEMENT,
