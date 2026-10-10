@@ -1,0 +1,198 @@
+{
+  "schema_version": "1.0",
+  "id": "tic-464547401-s01",
+  "version": "0.1.1",
+  "title": "TIC 464547401: a 13.24438-day transit-like signal",
+  "target": {
+    "tic": "464547401",
+    "gaia_dr3": "6435059343942224256",
+    "aliases": [
+      "TIC 464547401",
+      "TYC 9078-80-1",
+      "TYC 9078-00080-1",
+      "Gaia DR3 6435059343942224256",
+      "Gaia DR2 6435059343942224256",
+      "2MASS J19021501-6521326"
+    ],
+    "coordinates": {
+      "ra_deg": 285.562511,
+      "dec_deg": -65.359019,
+      "frame": "ICRS",
+      "epoch": "J2000",
+      "provenance": "TIC/SPOC target coordinates; proper-motion propagation used separately for pixel localisation."
+    }
+  },
+  "signal": {
+    "period_d": {
+      "value": 13.244378535955102,
+      "error": 2.9716665505270095e-05
+    },
+    "epoch_btjd": {
+      "value": 1665.0298891086063,
+      "error": 0.004935469917780313
+    },
+    "epoch_bjd_tdb": 2458665.0298891086,
+    "bjd_offset": 2457000,
+    "time_scale": "TDB",
+    "covariance_epoch_period_d2": [
+      [
+        2.435886330931441e-05,
+        -1.4284240364593778e-07
+      ],
+      [
+        -1.4284240364593778e-07,
+        8.830802087521096e-10
+      ]
+    ],
+    "covariance_method": "Phase 1 joint 128-repetition, 30-minute block-bootstrap covariance; marginal errors from this same covariance.",
+    "duration_h": {
+      "value": 2.511900192368329,
+      "error": 0.13833103922072626
+    },
+    "depth_ppm": {
+      "value": 477.1748346221552,
+      "error": 27.257163365954334
+    },
+    "model": "exposure-integrated diagnostic trapezoid; per-event baseline/slope/depth; separately measured local box-window depth",
+    "sectors": [
+      13,
+      67,
+      94,
+      101,
+      102,
+      103,
+      104
+    ],
+    "covered_events": 14,
+    "limits": [
+      "Conditional diagnostic model, not a physical transit inference.",
+      "No search-calibrated false-alarm rate or planet probability.",
+      "Host identity, dilution, eccentricity and recent/older timing consistency unresolved."
+    ]
+  },
+  "assessment": {
+    "disposition": "unclassified_transit_like_signal",
+    "source_localisation": {
+      "status": "unresolved",
+      "reason": "Conditional multi-sector centroids favour the target, but close-source exclusion lacks adequate PRF/systematics calibration.",
+      "evidence": [
+        "evidence/phase2/analysis/source_summary.json",
+        "evidence/phase2/analysis/source_aperture_summary.png"
+      ]
+    },
+    "timing_consistency": {
+      "status": "unresolved",
+      "reason": "Independent free-shape older/recent periods differ by 2.43 conditional sigma; baseline/shape sensitivity prevents a robust classification.",
+      "evidence": [
+        "evidence/phase2/analysis/timing_ephemerides.json",
+        "evidence/phase2/analysis/timing_sensitivity.csv"
+      ]
+    }
+  },
+  "novelty": {
+    "status": "no_match_in_checked_sources",
+    "checked_utc": "2026-10-10T13:17:51.393611+00:00",
+    "evidence": [
+      "evidence/phase1/catalogues/catalogue_summary.json",
+      "NOVELTY.md"
+    ],
+    "limits": [
+      "Absence from checked catalogues does not establish discovery priority.",
+      "This bounded check does not repeat the full SPOC TCE/EB/literature search.",
+      "No matching record is not a guarantee of novelty or discovery priority."
+    ]
+  },
+  "provenance": {
+    "analysis_date": "2026-10-10",
+    "source_revisions": {
+      "phase1": "fb6c56fb7ba246d3b2c796be13549c3634fc261a",
+      "phase2": "0108805fdec3fd925a05331b2e3de088902f36df"
+    },
+    "runs": {
+      "phase1": "20261010T134148Z-tic-464547401-vetting-9ad8f9",
+      "phase2": "20261010T154424Z-tic-464547401-phase2-analyze-c8da15"
+    },
+    "input_lock": "inputs.json"
+  },
+  "reproducibility": {
+    "level": "evidence_inspection",
+    "command": "uv sync --frozen && uv run python scripts/catalogue.py check",
+    "limits": [
+      "This validates the public evidence package; it does not recompute light-curve or pixel fits.",
+      "Numerical reruns were verified privately. Public numerical reproduction remains incomplete."
+    ],
+    "requirements_for_numerical_release": [
+      "Publish exact input bytes, code capsule, frozen dependency lock and original configs without private archival dependencies.",
+      "Re-run from a clean environment using only publicly accessible inputs; publish the output comparison certificate."
+    ]
+  },
+  "publication": {
+    "state": "disclosed",
+    "first_public_utc": "2026-10-10T17:54:43Z",
+    "release_url": null,
+    "doi": null,
+    "authors": [
+      "Bruno Rahle"
+    ],
+    "disclosure_url": "https://github.com/brahle/exoplanet-candidates/tree/6a8073f9cbdc626ca45d627f0a515014279aada3/candidates/tic-464547401-s01"
+  },
+  "evidence": [
+    "evidence/phase1/analysis/all_baseline_predictions.csv",
+    "evidence/phase1/analysis/bls_compute_stats.json",
+    "evidence/phase1/analysis/ephemerides.json",
+    "evidence/phase1/analysis/events.csv",
+    "evidence/phase1/analysis/final_folds.png",
+    "evidence/phase1/analysis/overlap_audit.json",
+    "evidence/phase1/analysis/retrospective_folds.png",
+    "evidence/phase1/analysis/robustness.csv",
+    "evidence/phase1/analysis/robustness_failures.json",
+    "evidence/phase1/catalogues/catalogue_summary.json",
+    "evidence/phase1/catalogues/nasa_pscomppars.csv",
+    "evidence/phase1/catalogues/nasa_toi.csv",
+    "evidence/phase1/reproducibility/comparison.json",
+    "evidence/phase2/analysis/aperture_depths.csv",
+    "evidence/phase2/analysis/aperture_pairs.csv",
+    "evidence/phase2/analysis/contaminants.csv",
+    "evidence/phase2/analysis/difference_s101_FFI_SPOC_FFI.png",
+    "evidence/phase2/analysis/difference_s102_FFI_SPOC_FFI.png",
+    "evidence/phase2/analysis/difference_s103_FFI_SPOC_FFI.png",
+    "evidence/phase2/analysis/difference_s104_FFI_SPOC_FFI.png",
+    "evidence/phase2/analysis/difference_s13_FFI_SPOC_FFI.png",
+    "evidence/phase2/analysis/difference_s67_FFI_SPOC_FFI.png",
+    "evidence/phase2/analysis/difference_s94_FFI_SPOC_FFI.png",
+    "evidence/phase2/analysis/event_timing_profiles.png",
+    "evidence/phase2/analysis/event_timings.csv",
+    "evidence/phase2/analysis/leave_one_event_out.csv",
+    "evidence/phase2/analysis/neighbours.csv",
+    "evidence/phase2/analysis/pixel_events.csv",
+    "evidence/phase2/analysis/s13_baseline_comparison.csv",
+    "evidence/phase2/analysis/s13_flagged_cadences.csv",
+    "evidence/phase2/analysis/s13_instrument_baselines.png",
+    "evidence/phase2/analysis/source_aperture_summary.png",
+    "evidence/phase2/analysis/source_summary.json",
+    "evidence/phase2/analysis/stellar_density.json",
+    "evidence/phase2/analysis/stellar_duration_constraint.png",
+    "evidence/phase2/analysis/timing_ephemerides.json",
+    "evidence/phase2/analysis/timing_predictions.png",
+    "evidence/phase2/analysis/timing_sensitivity.csv",
+    "evidence/phase2/reproducibility/comparison.json",
+    "inputs.json",
+    "analysis-settings.json",
+    "README.md",
+    "NOVELTY.md",
+    "REPRODUCIBILITY.md",
+    "publication-receipt.json"
+  ],
+  "history": [
+    {
+      "date": "2026-10-10",
+      "version": "0.1.0",
+      "change": "Initial local dossier prepared from preserved Phase 1/2 results; no public-disclosure timestamp assigned."
+    },
+    {
+      "date": "2026-10-10",
+      "version": "0.1.1",
+      "change": "Record user-authorized public Git disclosure and observed GitHub timestamp; scientific measurements and evidence unchanged."
+    }
+  ]
+}
