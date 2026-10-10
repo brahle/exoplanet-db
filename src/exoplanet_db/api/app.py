@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import Any
 
 import prometheus_client
@@ -120,6 +121,34 @@ class PaginatedResponse(BaseModel):
     total: int
     limit: int
     offset: int
+    attribution: dict[str, str] = Field(default_factory=lambda: ATTRIBUTION_METADATA)
+
+
+class ObservationQueueItem(BaseModel):
+    signal_id: str
+    target_id: str
+    target_name: str
+    signal_name: str
+    current_disposition: str
+    transit_mid_utc: datetime
+    transit_start_utc: datetime
+    transit_end_utc: datetime
+    duration_h: float
+    timing_uncertainty_min: float
+    priority_score: float
+    target_altitude_deg: float
+    target_airmass: float
+    sun_altitude_deg: float
+    moon_separation_deg: float
+    is_observable: bool
+    fit_model: str | None = None
+
+
+class ObservationQueueResponse(BaseModel):
+    items: list[ObservationQueueItem]
+    total: int
+    observer: dict[str, float]
+    window: dict[str, str]
     attribution: dict[str, str] = Field(default_factory=lambda: ATTRIBUTION_METADATA)
 
 
@@ -311,3 +340,32 @@ async def list_snapshots(
         }
         for s in snapshots
     ]
+
+
+@app.get("/v1/observations/queue", response_model=ObservationQueueResponse, tags=["Observations"])
+async def get_observation_queue(
+    lat: float = Query(..., ge=-90.0, le=90.0, description="Observer geodetic latitude in degrees"),
+    lon: float = Query(
+        ..., ge=-180.0, le=180.0, description="Observer geodetic longitude in degrees"
+    ),
+    start_time: datetime = Query(..., description="Observation window start in UTC (ISO-8601)"),
+    end_time: datetime = Query(..., description="Observation window end in UTC (ISO-8601)"),
+    min_priority: float = Query(0.0, ge=0.0, description="Minimum priority score cutoff"),
+    limit: int = Query(50, ge=1, le=200),
+    session: AsyncSession = Depends(get_session),
+):
+    service = CatalogService(session)
+    items = await service.get_observation_queue(
+        lat_deg=lat,
+        lon_deg=lon,
+        start_time=start_time,
+        end_time=end_time,
+        min_priority=min_priority,
+        limit=limit,
+    )
+    return ObservationQueueResponse(
+        items=[ObservationQueueItem(**item) for item in items],
+        total=len(items),
+        observer={"lat": lat, "lon": lon},
+        window={"start": start_time.isoformat(), "end": end_time.isoformat()},
+    )

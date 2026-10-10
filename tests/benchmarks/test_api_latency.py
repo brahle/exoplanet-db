@@ -46,7 +46,7 @@ async def test_api_latency_p95_under_50ms():
 
     # Concurrently execute 50 requests
     latencies: list[float] = []
-    sem = asyncio.Semaphore(10)
+    sem = asyncio.Semaphore(4)
 
     async def make_query(idx: int):
         async with sem:

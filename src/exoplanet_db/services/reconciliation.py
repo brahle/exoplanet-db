@@ -123,3 +123,35 @@ def check_signal_match(
         "sigma_epoch": sigma_e,
         "phase_overlap": overlap,
     }
+
+
+def match_signal_to_existing(
+    existing_signals: list[Any],
+    cand_period: float,
+    cand_epoch: float,
+    period_err: float | None = None,
+    epoch_err: float | None = None,
+    duration_h: float | None = None,
+) -> Any | None:
+    """
+    Finds an existing signal that matches the candidate period and epoch
+    within 3-sigma Mahalanobis distance and phase overlap criteria.
+    """
+    for s in existing_signals:
+        if s.primary_period_d is None or s.primary_epoch_bjd is None:
+            continue
+        res = check_signal_match(
+            period1_d=s.primary_period_d,
+            period1_err=s.primary_period_err_d,
+            epoch1_bjd=s.primary_epoch_bjd,
+            epoch1_err=None,
+            period2_d=cand_period,
+            period2_err=period_err,
+            epoch2_bjd=cand_epoch,
+            epoch2_err=epoch_err,
+            duration1_h=s.primary_duration_h,
+            duration2_h=duration_h,
+        )
+        if res.get("match_type") == "identical_signal":
+            return s
+    return None

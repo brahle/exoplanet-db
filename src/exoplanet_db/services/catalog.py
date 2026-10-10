@@ -1,13 +1,22 @@
 from __future__ import annotations
 
+from datetime import datetime
+from typing import Any
+
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from exoplanet_db.models import (
+    EphemerisFit,
     PublishedSnapshot,
     Signal,
     Target,
+)
+from exoplanet_db.services.ephemeris import find_upcoming_transits
+from exoplanet_db.services.observability import (
+    calculate_observability,
+    compute_priority_score,
 )
 
 
@@ -128,3 +137,87 @@ class CatalogService:
         query = select(PublishedSnapshot).order_by(PublishedSnapshot.published_at.desc())
         res = await self.session.execute(query)
         return list(res.scalars().all())
+
+    async def get_observation_queue(
+        self,
+        lat_deg: float,
+        lon_deg: float,
+        start_time: datetime,
+        end_time: datetime,
+        min_priority: float = 0.0,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        query = (
+            select(EphemerisFit)
+            .where(EphemerisFit.is_coherent.is_(True))
+            .options(selectinload(EphemerisFit.signal).selectinload(Signal.target))
+        )
+        res = await self.session.execute(query)
+        fits = list(res.scalars().all())
+
+        queue_entries: list[dict[str, Any]] = []
+
+        for fit in fits:
+            signal = fit.signal
+            if not signal or not signal.target:
+                continue
+            target = signal.target
+            if target.ra_deg is None or target.dec_deg is None:
+                continue
+
+            try:
+                transits = find_upcoming_transits(
+                    fit=fit,
+                    ra_deg=target.ra_deg,
+                    dec_deg=target.dec_deg,
+                    start_utc=start_time,
+                    end_utc=end_time,
+                    observer_lat_deg=lat_deg,
+                    observer_lon_deg=lon_deg,
+                )
+            except Exception:
+                continue
+
+            for t in transits:
+                obs = calculate_observability(
+                    ra_deg=target.ra_deg,
+                    dec_deg=target.dec_deg,
+                    time_utc=t["utc_mid"],
+                    lat_deg=lat_deg,
+                    lon_deg=lon_deg,
+                )
+
+                score = compute_priority_score(
+                    disposition=signal.current_disposition,
+                    timing_uncertainty_min=t["timing_uncertainty_min"],
+                    depth_ppm=signal.primary_depth_ppm or 1000.0,
+                    duration_h=t["duration_h"],
+                    is_observable=obs["is_observable"],
+                    is_coherent=True,
+                )
+
+                if score >= min_priority:
+                    queue_entries.append(
+                        {
+                            "signal_id": signal.id,
+                            "target_id": target.id,
+                            "target_name": target.primary_name,
+                            "signal_name": signal.display_name,
+                            "current_disposition": signal.current_disposition,
+                            "transit_mid_utc": t["utc_mid"],
+                            "transit_start_utc": t["transit_start_utc"],
+                            "transit_end_utc": t["transit_end_utc"],
+                            "duration_h": t["duration_h"],
+                            "timing_uncertainty_min": round(t["timing_uncertainty_min"], 2),
+                            "priority_score": score,
+                            "target_altitude_deg": obs["target_altitude_deg"],
+                            "target_airmass": obs["target_airmass"],
+                            "sun_altitude_deg": obs["sun_altitude_deg"],
+                            "moon_separation_deg": obs["moon_separation_deg"],
+                            "is_observable": obs["is_observable"],
+                            "fit_model": t.get("solution_name"),
+                        }
+                    )
+
+        queue_entries.sort(key=lambda x: (-x["priority_score"], x["transit_mid_utc"]))
+        return queue_entries[:limit]
