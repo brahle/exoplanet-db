@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import astropy.units as u
@@ -122,6 +122,10 @@ def find_upcoming_transits(
             cov_epoch_period=cov,
         )
 
+        # BJD is within ~0.005 days of UTC mid. Pre-filter cycles outside window
+        if bjd_mid < (start_bjd - 0.05) or bjd_mid > (end_bjd + 0.05):
+            continue
+
         utc_mid = bjd_to_utc(
             bjd_tdb=bjd_mid,
             ra_deg=ra_deg,
@@ -132,6 +136,7 @@ def find_upcoming_transits(
 
         if start_utc <= utc_mid <= end_utc:
             duration_h = fit.duration_h or 2.5
+            half_dur = timedelta(hours=duration_h / 2.0)
             transits.append(
                 {
                     "cycle_number": n,
@@ -139,12 +144,8 @@ def find_upcoming_transits(
                     "utc_mid": utc_mid,
                     "timing_uncertainty_min": sigma_d * 1440.0,
                     "duration_h": duration_h,
-                    "transit_start_utc": Time(
-                        Time(utc_mid).jd - (duration_h / 48.0), format="jd"
-                    ).to_datetime(timezone=UTC),
-                    "transit_end_utc": Time(
-                        Time(utc_mid).jd + (duration_h / 48.0), format="jd"
-                    ).to_datetime(timezone=UTC),
+                    "transit_start_utc": utc_mid - half_dur,
+                    "transit_end_utc": utc_mid + half_dur,
                     "is_coherent": True,
                     "solution_name": fit.fit_model,
                 }

@@ -165,6 +165,10 @@ class CatalogService:
             if target.ra_deg is None or target.dec_deg is None:
                 continue
 
+            # Fast geometric pre-filter: maximum meridian altitude is 90 - |lat - dec|
+            if (90.0 - abs(lat_deg - target.dec_deg)) < 15.0:
+                continue
+
             try:
                 transits = find_upcoming_transits(
                     fit=fit,
