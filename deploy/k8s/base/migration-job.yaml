@@ -21,7 +21,7 @@ spec:
         - name: harbor-pull
       containers:
         - name: migrate
-          image: harbor.brahle.com/library/exoplanet-db:v0.1.13
+          image: harbor.brahle.com/library/exoplanet-db:v0.1.14
           command:
             - sh
             - -c

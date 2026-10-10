@@ -188,3 +188,22 @@ async def enrich_tic_targets(session: AsyncSession) -> int:
     await session.commit()
     logger.info("Enriched %d TIC targets from VizieR TIC 8.2", updated)
     return updated
+
+
+async def prune_orphan_signals(session: AsyncSession) -> list[str]:
+    """Delete signals no report points at.
+
+    Every ingest writes a report for each signal it creates, so a signal without one has
+    lost its provenance (its report was re-attached to the right signal by an upsert).
+    """
+    from sqlalchemy import delete, exists
+
+    from exoplanet_db.models import Signal
+
+    orphan = ~exists().where(Report.signal_id == Signal.id)
+    names = list((await session.execute(select(Signal.display_name).where(orphan))).scalars())
+    if names:
+        await session.execute(delete(Signal).where(orphan))
+        await session.commit()
+        logger.info("Pruned %d signals without reports: %s", len(names), ", ".join(names))
+    return names

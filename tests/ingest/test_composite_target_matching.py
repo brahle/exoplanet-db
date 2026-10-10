@@ -49,3 +49,32 @@ async def test_hosts_without_tic_do_not_merge():
         )
         assert counts == {"PSR B1257+12": 1, "OGLE-2005-BLG-071L": 2}
     await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_prune_orphan_signals_removes_only_unreported():
+    from exoplanet_db.ingest.common import prune_orphan_signals
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as session:
+        await IngestionRunner(session).ingest_nasa_composite([_row("A b", "A", 3.0)])
+    async with factory() as session:
+        target_id = (await session.execute(select(Target.id))).scalar_one()
+        session.add(
+            Signal(
+                target_id=target_id,
+                display_name="stale",
+                primary_period_d=9.0,
+                primary_epoch_bjd=0.0,
+                current_disposition="confirmed_planet",
+                scientific_limits=[],
+            )
+        )
+        await session.commit()
+        assert await prune_orphan_signals(session) == ["stale"]
+        names = (await session.execute(select(Signal.display_name))).scalars().all()
+        assert names == ["A b"]
+    await engine.dispose()

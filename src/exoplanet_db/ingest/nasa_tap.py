@@ -167,7 +167,7 @@ async def run_ingest(source: str = "all", limit: int | None = None) -> list[str]
 
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-    from exoplanet_db.ingest.common import enrich_tic_targets
+    from exoplanet_db.ingest.common import enrich_tic_targets, prune_orphan_signals
     from exoplanet_db.ingest.eumemic import fetch_and_ingest_eumemic
     from exoplanet_db.ingest.exofop import fetch_and_ingest_ctois
     from exoplanet_db.ingest.git_dossier import fetch_and_ingest_github_dossiers
@@ -220,6 +220,16 @@ async def run_ingest(source: str = "all", limit: int | None = None) -> list[str]
                 await session.rollback()
                 failed.append(name)
                 print(f"[{name}] FAILED: {exc!r}", flush=True)
+
+    async with session_factory() as session:
+        try:
+            pruned = await prune_orphan_signals(session)
+            print(
+                f"[prune] removed {len(pruned)} signals without reports {pruned[:10]}", flush=True
+            )
+        except Exception as exc:
+            failed.append("prune")
+            print(f"[prune] FAILED: {exc!r}", flush=True)
 
     async with session_factory() as session:
         try:
