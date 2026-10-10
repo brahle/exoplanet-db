@@ -487,3 +487,22 @@ async def get_observation_queue(
         if resp.status_code != 200:
             return {"total": 0, "items": []}
         return resp.json()
+
+
+@mcp.tool(name="get_catalog_stats")
+async def get_catalog_stats() -> dict[str, Any]:
+    """
+    Get current summary statistics of the Exoplanet DB catalog:
+    total signals/planets, confirmed planets, transit candidates, and stellar host systems.
+    """
+    if AsyncSessionLocal is not None:
+        async with AsyncSessionLocal() as session:
+            service = CatalogService(session)
+            return await service.get_stats()
+
+    async with httpx.AsyncClient(base_url=EXOPLANET_API_URL, timeout=15.0) as client:
+        resp = await client.get("/v1/stats")
+        if resp.status_code != 200:
+            return {"error": f"Failed to fetch stats: HTTP {resp.status_code}"}
+        return resp.json()
+

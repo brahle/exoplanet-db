@@ -193,12 +193,33 @@ class ObservationQueueResponse(BaseModel):
     attribution: dict[str, str] = Field(default_factory=lambda: ATTRIBUTION_METADATA)
 
 
+class CatalogStatsResponse(BaseModel):
+    total_signals: int
+    confirmed_planets: int
+    planet_candidates: int
+    unclassified_signals: int
+    candidates_total: int
+    false_positives: int
+    total_targets: int
+    disposition_counts: dict[str, int]
+    attribution: dict[str, str] = Field(default_factory=lambda: ATTRIBUTION_METADATA)
+
+
 # --- Endpoints ---
 
 
 @app.get("/healthz", tags=["Operations"])
 async def healthz():
     return {"status": "ok", "version": "0.1.0"}
+
+
+@app.get("/v1/stats", response_model=CatalogStatsResponse, tags=["Catalog"])
+async def get_catalog_stats(
+    session: AsyncSession = Depends(get_session),
+):
+    service = CatalogService(session)
+    stats = await service.get_stats()
+    return CatalogStatsResponse(**stats)
 
 
 @app.get("/v1/systems", response_model=PaginatedResponse, tags=["Catalog"])

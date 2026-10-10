@@ -141,12 +141,56 @@ function handleRoute() {
 // --- Candidates Catalog ---
 let currentQueryId = 0;
 
+async function loadCatalogStats() {
+  try {
+    const res = await fetch('/v1/stats');
+    if (!res.ok) return;
+    const stats = await res.json();
+
+    const totalEl = document.getElementById('stat-total-signals');
+    const confirmedEl = document.getElementById('stat-confirmed-planets');
+    const candidatesEl = document.getElementById('stat-candidates-total');
+    const targetsEl = document.getElementById('stat-total-targets');
+
+    if (totalEl) totalEl.textContent = Number(stats.total_signals).toLocaleString();
+    if (confirmedEl) confirmedEl.textContent = Number(stats.confirmed_planets).toLocaleString();
+    if (candidatesEl) candidatesEl.textContent = Number(stats.candidates_total).toLocaleString();
+    if (targetsEl) targetsEl.textContent = Number(stats.total_targets).toLocaleString();
+  } catch (err) {
+    console.warn('Failed to load stats:', err);
+  }
+}
+
 async function initCatalog() {
   const searchInput = document.getElementById('catalog-search');
   const sourceFilter = document.getElementById('source-filter');
   const dispositionFilter = document.getElementById('disposition-filter');
 
+  // Load stats and catalog candidates
+  loadCatalogStats();
   await loadCandidates();
+
+  // Attach quick-filter handlers to stat cards
+  document.querySelectorAll('.stats-grid .stat-card[data-filter]').forEach(card => {
+    card.addEventListener('click', () => {
+      const filter = card.getAttribute('data-filter');
+      const dSelect = document.getElementById('disposition-filter');
+      const sSelect = document.getElementById('source-filter');
+      const searchBox = document.getElementById('catalog-search');
+
+      if (filter === 'all') {
+        if (dSelect) dSelect.value = 'all';
+        if (sSelect) sSelect.value = 'all';
+        if (searchBox) searchBox.value = '';
+      } else if (filter === 'confirmed_planet') {
+        if (dSelect) dSelect.value = 'confirmed_planet';
+      } else if (filter === 'candidates') {
+        if (dSelect) dSelect.value = 'unclassified_transit_like_signal';
+      }
+      syncCatalogUrl();
+      loadCandidates();
+    });
+  });
 
   if (searchInput) {
     let debounceTimer;
@@ -193,6 +237,7 @@ function syncCatalogUrl() {
 
 async function loadCandidates() {
   const grid = document.getElementById('candidate-grid');
+  const countEl = document.getElementById('catalog-results-count');
   if (!grid) return;
 
   const searchVal = (document.getElementById('catalog-search')?.value || '').trim();
@@ -215,7 +260,18 @@ async function loadCandidates() {
     if (thisQuery !== currentQueryId) return; // Stale response discarded
 
     const candidates = data.items || [];
+    const totalMatches = data.total ?? candidates.length;
+
+    if (countEl) {
+      if (searchVal || sourceVal !== 'all' || dispVal !== 'all') {
+        countEl.textContent = `Showing ${candidates.length} of ${totalMatches.toLocaleString()} candidates matching filters`;
+      } else {
+        countEl.textContent = `Showing ${candidates.length} of ${totalMatches.toLocaleString()} total planets & candidates`;
+      }
+    }
+
     if (candidates.length === 0) {
+      if (countEl) countEl.textContent = '0 candidates match filters';
       grid.innerHTML = '<div style="color: var(--text-muted); grid-column: 1/-1; text-align: center; padding: 3rem;">No candidates matched your search criteria.</div>';
       return;
     }
@@ -237,6 +293,7 @@ async function loadCandidates() {
     });
   } catch (err) {
     if (thisQuery === currentQueryId) {
+      if (countEl) countEl.textContent = 'Failed to load records';
       grid.innerHTML = `<div style="color: var(--accent-rose); grid-column: 1/-1; text-align: center; padding: 2rem;">Failed to load catalog: ${escapeHtml(err.message)}</div>`;
     }
   }

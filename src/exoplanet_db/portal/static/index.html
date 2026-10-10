@@ -46,6 +46,61 @@
   <main>
     <!-- TAB 1: Candidates Catalog -->
     <section id="candidates-content" class="tab-content active">
+      <!-- Catalog Stats Summary Counters -->
+      <div class="stats-grid" id="stats-grid">
+        <div class="stat-card" data-filter="all" title="Click to view all planets and candidates">
+          <div class="stat-icon-wrap stat-icon-total">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="9" />
+              <path d="M12 3a9 9 0 0 1 9 9" />
+            </svg>
+          </div>
+          <div class="stat-content">
+            <div class="stat-value" id="stat-total-signals">—</div>
+            <div class="stat-label">Total Planets & Candidates</div>
+          </div>
+        </div>
+
+        <div class="stat-card" data-filter="confirmed_planet" title="Click to filter by confirmed planets">
+          <div class="stat-icon-wrap stat-icon-confirmed">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="8" />
+              <path d="m9 12 2 2 4-4" />
+            </svg>
+          </div>
+          <div class="stat-content">
+            <div class="stat-value" id="stat-confirmed-planets">—</div>
+            <div class="stat-label">Confirmed Planets</div>
+          </div>
+        </div>
+
+        <div class="stat-card" data-filter="candidates" title="Click to filter by candidates and unclassified signals">
+          <div class="stat-icon-wrap stat-icon-candidates">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="8" />
+              <line x1="12" y1="8" x2="12" y2="12" />
+              <line x1="12" y1="16" x2="12.01" y2="16" />
+            </svg>
+          </div>
+          <div class="stat-content">
+            <div class="stat-value" id="stat-candidates-total">—</div>
+            <div class="stat-label">Candidates & Signals</div>
+          </div>
+        </div>
+
+        <div class="stat-card" title="Total planetary host systems in database">
+          <div class="stat-icon-wrap stat-icon-systems">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2">
+              <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+            </svg>
+          </div>
+          <div class="stat-content">
+            <div class="stat-value" id="stat-total-targets">—</div>
+            <div class="stat-label">Host Star Systems</div>
+          </div>
+        </div>
+      </div>
+
       <div class="search-filter-bar">
         <div class="search-input-wrap">
           <svg class="search-icon" viewBox="0 0 24 24">
@@ -69,6 +124,10 @@
           <option value="unclassified_transit_like_signal">Unclassified Signals</option>
           <option value="false_positive">False Positives</option>
         </select>
+      </div>
+
+      <div class="catalog-status-bar">
+        <span id="catalog-results-count" class="catalog-results-count">Loading catalog records...</span>
       </div>
 
       <div id="candidate-grid" class="candidate-grid">

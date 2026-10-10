@@ -145,3 +145,18 @@ async def test_mcp_tools_http_client_mode(setup_mcp_db, monkeypatch):
     )
     assert res_novelty["status"] == "near_matches_found"
     assert len(res_novelty["near_matches"]) == 1
+
+    # 4. Test get_catalog_stats via HTTP
+    res_stats = await mcp_module.get_catalog_stats()
+    assert res_stats["total_signals"] == 1
+    assert res_stats["confirmed_planets"] == 1
+    assert res_stats["total_targets"] == 1
+
+
+@pytest.mark.asyncio
+async def test_mcp_get_catalog_stats_db_mode(setup_mcp_db):
+    res = await mcp_module.get_catalog_stats()
+    assert res["total_signals"] == 1
+    assert res["confirmed_planets"] == 1
+    assert res["total_targets"] == 1
+    assert "disposition_counts" in res

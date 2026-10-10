@@ -245,3 +245,34 @@ class CatalogService:
 
         queue_entries.sort(key=lambda x: (-x["priority_score"], x["transit_mid_utc"]))
         return queue_entries[:limit]
+
+    async def get_stats(self) -> dict[str, Any]:
+        disp_query = select(Signal.current_disposition, func.count(Signal.id)).group_by(
+            Signal.current_disposition
+        )
+        disp_res = await self.session.execute(disp_query)
+        disp_counts = dict(disp_res.all())
+
+        targets_query = select(func.count(Target.id))
+        targets_res = await self.session.execute(targets_query)
+        total_targets = targets_res.scalar() or 0
+
+        total_signals = sum(disp_counts.values())
+        confirmed_planets = disp_counts.get("confirmed_planet", 0) + disp_counts.get(
+            "validated_planet", 0
+        )
+        planet_candidates = disp_counts.get("planet_candidate", 0)
+        unclassified_signals = disp_counts.get("unclassified_transit_like_signal", 0)
+        candidates_total = planet_candidates + unclassified_signals
+        false_positives = disp_counts.get("false_positive", 0)
+
+        return {
+            "total_signals": total_signals,
+            "confirmed_planets": confirmed_planets,
+            "planet_candidates": planet_candidates,
+            "unclassified_signals": unclassified_signals,
+            "candidates_total": candidates_total,
+            "false_positives": false_positives,
+            "total_targets": total_targets,
+            "disposition_counts": disp_counts,
+        }
