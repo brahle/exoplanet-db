@@ -1,0 +1,54 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: exoplanet-db-ingest-nasa
+  namespace: exoplanet-db
+  labels:
+    app: exoplanet-db-ingest-nasa
+spec:
+  schedule: "30 3 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 1800
+      template:
+        metadata:
+          labels:
+            app: exoplanet-db-ingest-nasa
+        spec:
+          restartPolicy: OnFailure
+          imagePullSecrets:
+            - name: harbor-pull
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            fsGroup: 10001
+          containers:
+            - name: ingest
+              image: harbor.brahle.com/brahle/exoplanet-db:v0.1.0
+              imagePullPolicy: IfNotPresent
+              command:
+                - /app/.venv/bin/python
+                - -m
+                - exoplanet_db.ingest.nasa_tap
+              env:
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: exoplanet-app-db-creds
+                      key: DATABASE_URL
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                requests:
+                  cpu: "200m"
+                  memory: "512Mi"
+                limits:
+                  cpu: "1000m"
+                  memory: "2Gi"

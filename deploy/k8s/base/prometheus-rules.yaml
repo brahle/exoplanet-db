@@ -1,0 +1,28 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: exoplanet-db-alerts
+  namespace: exoplanet-db
+  labels:
+    role: alert-rules
+    app: exoplanet-db
+spec:
+  groups:
+    - name: exoplanet-db.rules
+      rules:
+        - alert: ExoplanetSourceStale
+          expr: (time() - exoplanet_last_ingest_timestamp_seconds) > 172800
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Exoplanet DB ingestion source is stale"
+            description: "No successful exoplanet ingestion has completed in the last 48 hours for instance {{ $labels.instance }}."
+        - alert: ExoplanetApiHighErrorRate
+          expr: rate(http_requests_total{status=~"5.."}[5m]) / rate(http_requests_total[5m]) > 0.05
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Exoplanet DB API 5xx error rate > 5%"
+            description: "Exoplanet DB API is returning high rate of 5xx errors: {{ $value | humanizePercentage }}."

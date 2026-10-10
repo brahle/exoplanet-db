@@ -9,6 +9,8 @@ resources:
   - service.yaml
   - servicemonitor.yaml
   - ingressroute.yaml
+  - cronjobs.yaml
+  - prometheus-rules.yaml
 
 images:
   - name: harbor.brahle.com/brahle/exoplanet-db
