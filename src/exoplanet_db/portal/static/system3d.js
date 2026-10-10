@@ -119,12 +119,24 @@ export function mountSystem(container, data) {
   const maxA = Math.max(...orbiting.map((p) => p.semi_major_axis_au));
   const auToScene = SCENE_RADIUS / maxA;
 
-  // Planet size exaggeration that keeps the largest planet within ~35% of the tightest gap.
+  // Displayed radius: published/derived radius, else R★·√depth against the (possibly assumed) star.
+  const starRsun = starRadiusAu / AU_PER_RSUN;
+  const displayRadiusEarth = (p) => {
+    if (p.radius_earth > 0) return { value: p.radius_earth, basis: p.radius_basis };
+    if (p.depth_ppm > 0 && p.depth_ppm < 1e6) return { value: Math.sqrt(p.depth_ppm / 1e6) * starRsun * 109.076, basis: 'assumed_star' };
+    return { value: 1, basis: 'placeholder' };
+  };
+
+  // One exaggeration for star AND planets, so their size ratio stays true. Capped so the star
+  // stays well inside the innermost orbit and the largest planet within ~35% of the tightest gap.
   const sortedA = orbiting.map((p) => p.semi_major_axis_au).sort((a, b) => a - b);
-  let minGap = sortedA[0] - starRadiusAu;
+  let minGap = sortedA[0];
   for (let i = 1; i < sortedA.length; i++) minGap = Math.min(minGap, sortedA[i] - sortedA[i - 1] || minGap);
-  const maxRpAu = Math.max(...orbiting.map((p) => (p.radius_earth || 1) * AU_PER_REARTH));
-  const autoScale = Math.max(1, Math.min(3000, (0.35 * Math.max(minGap, maxA * 0.02)) / maxRpAu));
+  const maxRpAu = Math.max(...orbiting.map((p) => displayRadiusEarth(p).value * AU_PER_REARTH));
+  const starFraction = (f) => (f * sortedA[0]) / starRadiusAu; // scale at which R★ = f × innermost a
+  const gapCap = (0.35 * Math.max(minGap, maxA * 0.02)) / maxRpAu;
+  const maxScale = Math.max(1, Math.min(starFraction(0.3), 3000));
+  const autoScale = Math.max(1, Math.min(starFraction(0.12), gapCap, 3000));
 
   // ----- DOM scaffold -----
   const root = el('div', 'system3d');
@@ -173,14 +185,15 @@ export function mountSystem(container, data) {
   }
 
   const sizeWrap = el('label', 'system3d-range');
-  sizeWrap.appendChild(el('span', null, 'Planet size'));
+  sizeWrap.appendChild(el('span', null, 'Body size'));
   const size = document.createElement('input');
   size.type = 'range';
   size.min = 0;
-  size.max = Math.log10(3000);
+  size.max = Math.log10(maxScale);
   size.step = 0.01;
   size.value = Math.log10(autoScale);
-  size.setAttribute('aria-label', 'Planet size exaggeration');
+  size.setAttribute('aria-label', 'Star and planet size exaggeration');
+  size.disabled = maxScale <= 1;
   const sizeOut = el('output', 'system3d-value');
   sizeWrap.append(size, sizeOut);
 
@@ -254,23 +267,25 @@ export function mountSystem(container, data) {
   // Star
   const starColor = blackbodyColor(data.star.teff_k);
   const starScene = starRadiusAu * auToScene;
+  let starMesh = null;
+  let starGlow = null;
+  let starLabelObj = null;
   {
     const geo = track(new THREE.SphereGeometry(starScene, 48, 32));
     const mat = track(new THREE.MeshBasicMaterial({ color: starColor }));
-    scene.add(new THREE.Mesh(geo, mat));
+    starMesh = new THREE.Mesh(geo, mat);
+    scene.add(starMesh);
     const glowTex = track(radialTexture([
       [0, 'rgba(255,255,255,0.9)'],
       [0.2, 'rgba(255,255,255,0.35)'],
       [1, 'rgba(255,255,255,0)'],
     ]));
     const glowMat = track(new THREE.SpriteMaterial({ map: glowTex, color: starColor, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
-    const glow = new THREE.Sprite(glowMat);
-    glow.scale.setScalar(Math.max(starScene * 6, SCENE_RADIUS * 0.08));
-    scene.add(glow);
+    starGlow = new THREE.Sprite(glowMat);
+    scene.add(starGlow);
     const starLabel = el('div', 'system3d-label star', data.starName || 'Host star');
-    const lbl = new CSS2DObject(starLabel);
-    lbl.position.set(0, -Math.max(starScene * 1.6, SCENE_RADIUS * 0.05), 0);
-    scene.add(lbl);
+    starLabelObj = new CSS2DObject(starLabel);
+    scene.add(starLabelObj);
   }
   scene.add(new THREE.AmbientLight(0xffffff, 0.18));
   const light = new THREE.PointLight(starColor, 3, 0, 0);
@@ -342,7 +357,8 @@ export function mountSystem(container, data) {
     const orbitMat = track(new THREE.LineBasicMaterial({ color, transparent: true, opacity: isSelf ? 0.95 : 0.4 }));
     scene.add(new THREE.Line(orbitGeo, orbitMat));
 
-    const radiusAu = (p.radius_earth || 1) * AU_PER_REARTH;
+    const shown = displayRadiusEarth(p);
+    const radiusAu = shown.value * AU_PER_REARTH;
     const geo = track(new THREE.SphereGeometry(1, 32, 24));
     const mat = track(new THREE.MeshStandardMaterial({ color, roughness: 0.75, metalness: 0, emissive: color, emissiveIntensity: isSelf ? 0.25 : 0.08 }));
     const mesh = new THREE.Mesh(geo, mat);
@@ -380,6 +396,7 @@ export function mountSystem(container, data) {
       isSelf,
       aScene,
       radiusAu,
+      radiusShown: shown,
       mesh,
       dot,
       ring,
@@ -416,7 +433,13 @@ export function mountSystem(container, data) {
       tr.appendChild(el('td', null, `${pl.p.period_d.toFixed(pl.p.period_d < 10 ? 4 : 2)} d`));
       tr.appendChild(el('td', null, fmtAu(pl.p.semi_major_axis_au) + (pl.p.semi_major_axis_basis === 'kepler3_assumed_solar_mass' ? ' *' : '')));
       tr.appendChild(
-        el('td', null, pl.p.radius_earth ? pl.p.radius_earth.toFixed(2) + (pl.p.radius_basis === 'transit_depth' ? ' †' : '') : 'unknown')
+        el(
+          'td',
+          null,
+          pl.radiusShown.basis === 'placeholder'
+            ? 'unknown'
+            : pl.radiusShown.value.toFixed(2) + (pl.radiusShown.basis === 'transit_depth' ? ' †' : pl.radiusShown.basis === 'assumed_star' ? ' ‡' : '')
+        )
       );
       const state = el('td', 'system3d-state', pl.phaseKnown ? '' : 'phase unknown');
       pl.stateCell = state;
@@ -431,10 +454,12 @@ export function mountSystem(container, data) {
     ];
     if (planets.some((pl) => pl.p.semi_major_axis_basis === 'kepler3_assumed_solar_mass')) lines.push('* a from Kepler’s third law assuming a 1 M☉ host (no published stellar mass).');
     if (planets.some((pl) => pl.p.radius_basis === 'transit_depth')) lines.push('† radius estimated as R★·√depth (undiluted, non-grazing).');
-    if (planets.some((pl) => !pl.p.radius_earth)) lines.push('Unknown radii are drawn at 1 R⊕.');
+    if (planets.some((pl) => pl.radiusShown.basis === 'assumed_star')) lines.push('‡ radius from √depth against the assumed 1 R☉ star (stellar radius unknown).');
+    if (planets.some((pl) => pl.radiusShown.basis === 'placeholder')) lines.push('Unknown radii are drawn at 1 R⊕.');
     if (planets.some((pl) => !pl.phaseKnown)) lines.push('Planets without a transit epoch are placed at an arbitrary phase.');
     if (!starRadiusKnown) lines.push('Stellar radius unknown; star drawn at 1 R☉.');
     if (hzText) lines.push(hzText);
+    lines.push('Body size enlarges the star and planets by the same factor, so their size ratio is true; orbit distances are to scale.');
     lines.push(`Faint rings every ${fmtAu(gridStep)} AU.`);
     if (missing.length) lines.push(`Not drawn (no period): ${missing.map((m) => m.display_name).join(', ')}.`);
     notes.textContent = lines.join(' ');
@@ -446,7 +471,7 @@ export function mountSystem(container, data) {
   let playing = !reduceMotion;
   let direction = 1;
   let daysPerSecond = 1;
-  let planetScale = autoScale;
+  let bodyScale = autoScale;
 
   function updateSpeed() {
     daysPerSecond = Math.pow(10, Number(speed.value));
@@ -454,9 +479,12 @@ export function mountSystem(container, data) {
     speedOut.textContent = d < 1 ? `${(d * 24).toPrecision(2)} h/s` : `${d < 10 ? d.toFixed(1) : Math.round(d)} d/s`;
   }
   function updateSize() {
-    planetScale = Math.pow(10, Number(size.value));
-    sizeOut.textContent = planetScale < 1.5 ? 'true scale' : `×${Math.round(planetScale)}`;
-    for (const pl of planets) pl.mesh.scale.setScalar(pl.radiusAu * auToScene * planetScale);
+    bodyScale = Math.min(maxScale, Math.pow(10, Number(size.value)));
+    sizeOut.textContent = bodyScale < 1.5 ? 'true scale' : `×${Math.round(bodyScale)}`;
+    for (const pl of planets) pl.mesh.scale.setScalar(pl.radiusAu * auToScene * bodyScale);
+    starMesh.scale.setScalar(bodyScale);
+    starGlow.scale.setScalar(Math.max(starScene * bodyScale * 3.5, SCENE_RADIUS * 0.08));
+    starLabelObj.position.set(0, -Math.max(starScene * bodyScale * 1.6, SCENE_RADIUS * 0.05), 0);
   }
   function updatePlay() {
     playBtn.textContent = playing ? '❚❚ Pause' : '▶ Play';
@@ -561,7 +589,7 @@ export function mountSystem(container, data) {
       pl.mesh.position.set(x, 0, z);
       pl.dot.position.set(x, 0, z);
       if (pl.ring) pl.ring.position.set(x, 0, z);
-      const lift = Math.max(pl.radiusAu * auToScene * planetScale * 1.6, SCENE_RADIUS * 0.035);
+      const lift = Math.max(pl.radiusAu * auToScene * bodyScale * 1.6, SCENE_RADIUS * 0.035);
       pl.label.position.set(x, lift, z);
       // In transit when the planet's projected separation from the star is below R★ + Rp, on the near side.
       const sep = Math.abs(x);

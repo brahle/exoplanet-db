@@ -24,7 +24,7 @@ spec:
         fsGroup: 10001
       containers:
         - name: api
-          image: harbor.brahle.com/library/exoplanet-db:v0.1.11
+          image: harbor.brahle.com/library/exoplanet-db:v0.1.12
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
