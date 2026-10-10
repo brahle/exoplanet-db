@@ -145,3 +145,33 @@ class NasaTapClient:
             limit=limit,
         )
         return await self.execute_query(query)
+
+
+async def run_ingest(limit: int | None = None) -> None:
+    import os
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from exoplanet_db.ingest.runner import IngestionRunner
+
+    db_url = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///exoplanet_db.sqlite")
+    if db_url.startswith("postgres://"):
+        db_url = db_url.replace("postgres://", "postgresql+asyncpg://", 1)
+    elif db_url.startswith("postgresql://") and "+asyncpg" not in db_url:
+        db_url = db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+
+    engine = create_async_engine(db_url, echo=False)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    client = NasaTapClient()
+    print("Fetching composite planets from NASA TAP...")
+    planets = await client.fetch_composite_planets(limit=limit)
+    print(f"Fetched {len(planets)} planets from NASA TAP. Ingesting into database...")
+    async with session_factory() as session:
+        runner = IngestionRunner(session)
+        snapshot = await runner.ingest_nasa_composite(planets)
+        print(f"Successfully ingested {snapshot.record_count} records. Snapshot ID: {snapshot.id}")
+    await engine.dispose()
+
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(run_ingest())
+

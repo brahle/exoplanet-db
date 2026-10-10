@@ -38,7 +38,6 @@ spec:
       priority: 100
       middlewares:
         - name: exoplanet-ratelimit
-        - name: traefik-crowdsec-bouncer@kubernetescrd
       services:
         - name: exoplanet-db-api
           port: 8000
