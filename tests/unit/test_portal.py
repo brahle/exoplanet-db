@@ -26,5 +26,7 @@ async def test_human_portal_endpoints():
         # 3. Test static JS
         res_js = await client.get("/static/portal.js")
         assert res_js.status_code == 200
-        assert "application/javascript" in res_js.headers.get("content-type", "") or "text/javascript" in res_js.headers.get("content-type", "")
+        assert "application/javascript" in res_js.headers.get(
+            "content-type", ""
+        ) or "text/javascript" in res_js.headers.get("content-type", "")
         assert "generateFoldedLightcurveSvg" in res_js.text
