@@ -5,7 +5,7 @@ from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import joinedload, selectinload
 
 from exoplanet_db.models import (
     EphemerisFit,
@@ -92,9 +92,7 @@ class CatalogService:
         offset: int = 0,
     ) -> tuple[list[Signal], int]:
         query = select(Signal).options(
-            selectinload(Signal.target),
-            selectinload(Signal.ephemeris_fits),
-            selectinload(Signal.harmonics),
+            joinedload(Signal.target),
         )
         count_query = select(func.count(Signal.id))
 

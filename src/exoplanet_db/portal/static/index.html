@@ -140,6 +140,9 @@
         </ul>
 
         <h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--accent-cyan);">MCP Server Configuration</h3>
+        <p style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 0.75rem;">
+          Connects external AI agents directly to the public read-only HTTPS REST API. No database credentials or internal cluster access required.
+        </p>
         <pre style="background: var(--bg-card); padding: 1rem; border-radius: var(--radius-sm); border: 1px solid var(--border-color); font-family: var(--font-mono); font-size: 0.8125rem; overflow-x: auto; color: var(--text-primary);">
 {
   "mcpServers": {
@@ -147,7 +150,7 @@
       "command": "python",
       "args": ["-m", "exoplanet_db.mcp.server"],
       "env": {
-        "DATABASE_URL": "postgresql+asyncpg://exoplanet_user:password@localhost:5432/exoplanet"
+        "EXOPLANET_API_URL": "https://exoplanets.brahle.com"
       }
     }
   }

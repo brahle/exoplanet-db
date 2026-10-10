@@ -118,7 +118,7 @@ class GitDossierIngest:
                 gaia_dr3_id=str(dossier.target.gaia_dr3) if dossier.target.gaia_dr3 else None,
                 ra_deg=dossier.target.coordinates.ra_deg,
                 dec_deg=dossier.target.coordinates.dec_deg,
-                epoch=2000.0,
+                epoch=str(dossier.target.coordinates.epoch or "J2000"),
                 aliases=aliases,
             )
             self.session.add(target)
@@ -258,6 +258,39 @@ class GitDossierIngest:
             published_at=now,
         )
         self.session.add(snapshot)
-
         await self.session.commit()
         return signal
+
+    async def ingest_repository(
+        self,
+        repo_dir: Path,
+        commit_sha: str | None = None,
+        git_repo: str = "brahle/exoplanet-candidates",
+    ) -> list[Signal]:
+        """
+        Scans a candidate git repository and ingests all candidate dossiers found.
+        """
+        import subprocess
+
+        if commit_sha is None:
+            try:
+                out = subprocess.check_output(
+                    ["git", "rev-parse", "HEAD"], cwd=repo_dir, text=True
+                )
+                commit_sha = out.strip()
+            except Exception:
+                commit_sha = "HEAD"
+
+        candidates_dir = repo_dir / "candidates"
+        ingested = []
+        if candidates_dir.exists():
+            for item in sorted(candidates_dir.iterdir()):
+                if item.is_dir() and (item / "candidate.json").exists():
+                    sig = await self.ingest_dossier_directory(
+                        dossier_dir=item,
+                        commit_sha=commit_sha,
+                        git_repo=git_repo,
+                    )
+                    ingested.append(sig)
+        return ingested
+

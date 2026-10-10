@@ -96,3 +96,52 @@ async def test_mcp_check_novelty_evidentiary_snapshot(setup_mcp_db):
     assert "checked_sources" in res_empty
     assert "known_unindexed_sources" in res_empty
     assert "epistemic_warning" in res_empty
+
+
+@pytest.mark.asyncio
+async def test_mcp_tools_http_client_mode(setup_mcp_db, monkeypatch):
+    """
+    Verify that MCP tools function completely over HTTP (FastAPI app)
+    when AsyncSessionLocal is None (i.e. zero database credentials or internal access).
+    """
+    import exoplanet_db.api.app as api_module
+    from httpx import ASGITransport, AsyncClient
+
+    # Set FastAPI app session to the test DB
+    api_module.AsyncSessionLocal = mcp_module.AsyncSessionLocal
+
+    # Force MCP module to HTTP client mode (no database session)
+    mcp_module.AsyncSessionLocal = None
+
+    # Patch httpx.AsyncClient in mcp_module to target the in-memory FastAPI app
+    transport = ASGITransport(app=api_module.app)
+
+    class TestAsyncClient(AsyncClient):
+        def __init__(self, *args, **kwargs):
+            kwargs["transport"] = transport
+            kwargs["base_url"] = "http://testserver"
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(mcp_module.httpx, "AsyncClient", TestAsyncClient)
+
+    # 1. Test lookup_target via HTTP
+    res_lookup = await mcp_module.lookup_target("WASP-12")
+    assert res_lookup["found"] is True
+    assert res_lookup["count"] == 1
+    sys_res = res_lookup["systems"][0]
+    assert sys_res["primary_name"] == "WASP-12"
+    assert len(sys_res["candidates"]) == 1
+
+    # 2. Test search_signals via HTTP
+    res_signals = await mcp_module.search_signals(min_period_d=1.0, max_period_d=2.0)
+    assert res_signals["returned"] == 1
+    assert res_signals["candidates"][0]["display_name"] == "WASP-12 b"
+
+    # 3. Test check_novelty via HTTP
+    res_novelty = await mcp_module.check_novelty(
+        ra_deg=97.6397,
+        dec_deg=29.6722,
+        period_d=1.09142,
+    )
+    assert res_novelty["status"] == "near_matches_found"
+    assert len(res_novelty["near_matches"]) == 1
