@@ -224,9 +224,9 @@ class EphemerisFit(Base):
     depth_err_ppm: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     covariance_matrix: Mapped[list[list[float]] | None] = mapped_column(JSONType, nullable=True)
-    covariance_method: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    covariance_method: Mapped[str | None] = mapped_column(Text, nullable=True)
     time_scale: Mapped[str] = mapped_column(String(16), default="TDB", nullable=False)
-    fit_model: Mapped[str] = mapped_column(String(128), default="linear_ephemeris", nullable=False)
+    fit_model: Mapped[str] = mapped_column(Text, default="linear_ephemeris", nullable=False)
     is_coherent: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
     created_at: Mapped[datetime] = mapped_column(
