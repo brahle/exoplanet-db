@@ -184,13 +184,18 @@ async def run_ingest(source: str = "all", limit: int | None = None) -> list[str]
     client = NasaTapClient()
     selected = SOURCE_GROUPS.get(source, (source,))
 
+    def require_rows(rows, table):
+        if not rows:
+            raise ValueError(f"NASA TAP {table} returned 0 rows")
+        return rows
+
     async def composite(session):
-        rows = await client.fetch_composite_planets(limit=limit)
+        rows = require_rows(await client.fetch_composite_planets(limit=limit), "pscomppars")
         snap = await IngestionRunner(session).ingest_nasa_composite(rows)
         return f"{len(rows)} rows fetched, {snap.record_count} ingested"
 
     async def toi(session):
-        rows = await client.fetch_toi_candidates(limit=limit)
+        rows = require_rows(await client.fetch_toi_candidates(limit=limit), "toi")
         snap = await IngestionRunner(session).ingest_nasa_toi(rows)
         return f"{len(rows)} rows fetched, {snap.record_count} ingested"
 

@@ -289,11 +289,10 @@ async def fetch_eumemic_candidates(sha: str) -> list[tuple[str, list[dict[str, A
             return resp.text
 
         out: list[tuple[str, list[dict[str, Any]]]] = []
-        allsky = [
-            r
-            for r in parser.parse_candidates_csv(await get(ALLSKY_FILE))
-            if r["tier"] in PUBLISHED_TIERS
-        ]
+        allsky_all = parser.parse_candidates_csv(await get(ALLSKY_FILE))
+        if not allsky_all:
+            raise ValueError(f"{ALLSKY_FILE} at {sha} parsed to 0 rows")
+        allsky = [r for r in allsky_all if r["tier"] in PUBLISHED_TIERS]
         out.append((ALLSKY_FILE, allsky))
 
         tiers = list(csv.DictReader(io.StringIO((await get(EARLIER_TIERS_FILE)).strip())))

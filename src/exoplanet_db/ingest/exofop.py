@@ -234,8 +234,21 @@ async def fetch_and_ingest_ctois(session: AsyncSession) -> int:
     """Downloads the full ExoFOP CTOI table and ingests every row."""
     import httpx
 
-    async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
-        resp = await client.get(EXOFOP_CTOI_URL)
-        resp.raise_for_status()
+    import asyncio
+
     ingest = ExoFOPIngest(session)
-    return await ingest.ingest_ctois(ingest.parse_ctoi_csv(resp.text))
+    records: list[dict[str, Any]] = []
+    body = ""
+    async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
+        for attempt in range(3):
+            resp = await client.get(EXOFOP_CTOI_URL)
+            resp.raise_for_status()
+            body = resp.text
+            records = ingest.parse_ctoi_csv(body)
+            if records:
+                break
+            await asyncio.sleep(30 * (attempt + 1))
+    if not records:
+        # ExoFOP occasionally answers 200 with an empty or HTML body; never treat that as "no CTOIs"
+        raise ValueError(f"ExoFOP CTOI export parsed to 0 rows ({len(body)} bytes): {body[:200]!r}")
+    return await ingest.ingest_ctois(records)
