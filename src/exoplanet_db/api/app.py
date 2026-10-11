@@ -348,6 +348,7 @@ class ConeSignal(BaseModel):
     period_d: float | None = None
     epoch_bjd: float | None = None
     current_disposition: str
+    planet_score: int | None = None
     sources: list[str] = Field(description="Every catalogue reporting this signal")
     source_keys: list[str] = Field(default_factory=list)
 
@@ -443,6 +444,7 @@ async def cone_search(
                         if (s.primary_epoch_bjd or 0) > 2400000
                         else None,
                         current_disposition=s.current_disposition,
+                        planet_score=s.planet_score,
                         sources=sorted({r.source_name for r in s.reports}),
                         source_keys=sorted({r.source_key for r in s.reports}),
                     )
@@ -457,6 +459,68 @@ async def cone_search(
         total=len(items),
         items=items,
         sources=[SourceStats(**s) for s in await service.get_source_status()],
+    )
+
+
+class CandidateBatchRequest(BaseModel):
+    ids: list[str] = Field(
+        min_length=1,
+        max_length=500,
+        description="Full candidate ids or unique prefixes (>= 8 chars)",
+    )
+
+
+class ResolveRequest(BaseModel):
+    identifiers: list[str] = Field(
+        min_length=1,
+        max_length=500,
+        description="TIC / Gaia DR3 ids, star or signal names, source keys (TOI-1234.01), TOI hosts",
+    )
+
+
+class NoveltyQuery(BaseModel):
+    ra_deg: float = Field(ge=-360.0, le=720.0)
+    dec_deg: float = Field(ge=-90.0, le=90.0)
+    period_d: float
+    label: str | None = None
+
+
+class NoveltyBatchRequest(BaseModel):
+    signals: list[NoveltyQuery] = Field(min_length=1, max_length=200)
+    cone_radius_arcsec: float = Field(30.0, gt=0.0, le=3600.0)
+    period_tolerance_percent: float = Field(1.0, gt=0.0, le=50.0)
+    harmonic_tolerance_percent: float = Field(1.0, gt=0.0, le=50.0)
+
+
+@app.post("/v1/candidates/batch", tags=["Batch"])
+async def candidates_batch(
+    body: CandidateBatchRequest, session: AsyncSession = Depends(get_session)
+):
+    """Many candidates in one call, in request order; unknown and ambiguous ids are listed."""
+    from exoplanet_db.services.bulk import get_signals
+
+    return await get_signals(session, body.ids)
+
+
+@app.post("/v1/systems/resolve", tags=["Batch"])
+async def resolve_systems(body: ResolveRequest, session: AsyncSession = Depends(get_session)):
+    """Exact resolution of many identifiers to host stars and their signals (not a substring search)."""
+    from exoplanet_db.services.bulk import resolve_targets
+
+    return await resolve_targets(session, body.identifiers)
+
+
+@app.post("/v1/novelty/batch", tags=["Batch"])
+async def novelty_batch(body: NoveltyBatchRequest, session: AsyncSession = Depends(get_session)):
+    """Novelty evidence (cone + period/harmonic matches) for many signals; sources listed once."""
+    from exoplanet_db.services.novelty import check_many
+
+    return await check_many(
+        CatalogService(session),
+        [q.model_dump() for q in body.signals],
+        body.cone_radius_arcsec,
+        body.period_tolerance_percent,
+        body.harmonic_tolerance_percent,
     )
 
 
@@ -526,6 +590,8 @@ async def get_system(
             source_localisation_status=s.source_localisation_status,
             timing_consistency_status=s.timing_consistency_status,
             scientific_limits=s.scientific_limits,
+            planet_score=s.planet_score,
+            source_names=sorted({r.source_name for r in target.reports if r.signal_id == s.id}),
         )
         for s in target.signals
     ]

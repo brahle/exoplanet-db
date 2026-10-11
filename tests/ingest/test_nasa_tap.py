@@ -109,4 +109,3 @@ async def test_nasa_toi_ingestion():
         assert snapshot.source_name == "nasa_toi"
 
     await engine.dispose()
-
