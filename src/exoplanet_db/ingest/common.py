@@ -140,7 +140,7 @@ async def fetch_tic_rows(tic_ids: list[str], timeout: float = 120.0) -> dict[str
                     "teff_k": _float(row.get("Teff")),
                     "radius_rsun": _float(row.get("Rad")),
                     "mass_msun": _float(row.get("Mass")),
-                    "gaia_dr3_id": (row.get("GAIA") or "").strip() or None,
+                    "gaia_dr2_id": (row.get("GAIA") or "").strip() or None,
                     "pm_ra_mas_yr": _float(row.get("pmRA")),
                     "pm_dec_mas_yr": _float(row.get("pmDE")),
                 }
@@ -181,7 +181,8 @@ async def enrich_tic_targets(session: AsyncSession) -> int:
             t.dec_deg = row["dec_deg"]
             t.pm_ra_mas_yr = t.pm_ra_mas_yr or row["pm_ra_mas_yr"]
             t.pm_dec_mas_yr = t.pm_dec_mas_yr or row["pm_dec_mas_yr"]
-        for key in ("teff_k", "radius_rsun", "mass_msun", "tess_mag", "v_mag", "gaia_dr3_id"):
+        # TIC 8.2's GAIA column is a Gaia DR2 source_id, so it never fills gaia_dr3_id
+        for key in ("teff_k", "radius_rsun", "mass_msun", "tess_mag", "v_mag"):
             if getattr(t, key) is None and row.get(key) is not None:
                 setattr(t, key, row[key])
         updated += 1

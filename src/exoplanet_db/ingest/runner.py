@@ -40,9 +40,9 @@ class IngestionRunner:
             dec = float(row.get("dec", 0.0))
             tic = str(row.get("tic_id") or "").replace("TIC", "").strip() or None
             gaia = (
-                str(row.get("gaia_dr3_id") or row.get("gaia_id") or "")
+                # gaia_id is a DR2 designation; only a DR3 id belongs in gaia_dr3_id
+                str(row.get("gaia_dr3_id") or "")
                 .replace("Gaia DR3", "")
-                .replace("Gaia DR2", "")
                 .strip()
                 or None
             )
