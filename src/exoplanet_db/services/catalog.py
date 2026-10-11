@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from datetime import datetime
 from typing import Any
 
@@ -327,8 +328,10 @@ class CatalogService:
             cols["radius_earth"].append(round(radius, 3) if radius else None)
         return cols
 
-    async def list_published_snapshots(self) -> list[PublishedSnapshot]:
+    async def list_published_snapshots(self, limit: int | None = None) -> list[PublishedSnapshot]:
         query = select(PublishedSnapshot).order_by(PublishedSnapshot.published_at.desc())
+        if limit:
+            query = query.limit(limit)
         res = await self.session.execute(query)
         return list(res.scalars().all())
 
@@ -420,6 +423,89 @@ class CatalogService:
         queue_entries.sort(key=lambda x: (-x["priority_score"], x["transit_mid_utc"]))
         return queue_entries[:limit]
 
+    async def get_source_status(self) -> list[dict[str, Any]]:
+        """Current coverage of each source: one entry per source, not per ingest run.
+
+        reports/signals count what is indexed now; commit_sha is the revision of the
+        most recent snapshot that recorded one (git-pinned sources).
+        """
+        source_rows = (
+            await self.session.execute(
+                select(
+                    Report.source_name,
+                    func.count(func.distinct(Report.signal_id)),
+                    func.count(Report.id),
+                ).group_by(Report.source_name)
+            )
+        ).all()
+        snapshots = (
+            await self.session.execute(
+                select(
+                    PublishedSnapshot.source_name,
+                    PublishedSnapshot.snapshot_utc,
+                    PublishedSnapshot.commit_sha,
+                ).order_by(PublishedSnapshot.snapshot_utc.desc())
+            )
+        ).all()
+        last_ingested: dict[str, Any] = {}
+        commit: dict[str, str] = {}
+        for name, ts, sha in snapshots:
+            last_ingested.setdefault(name, ts)
+            if sha and sha != "HEAD":
+                commit.setdefault(name, sha)
+        return sorted(
+            (
+                {
+                    "source_name": name,
+                    "signals": n_signals,
+                    "reports": n_reports,
+                    "last_ingested_utc": last_ingested.get(name),
+                    "commit_sha": commit.get(name),
+                }
+                for name, n_signals, n_reports in source_rows
+            ),
+            key=lambda r: -r["signals"],
+        )
+
+    async def cone_search(
+        self, ra_deg: float, dec_deg: float, radius_arcsec: float
+    ) -> list[dict[str, Any]]:
+        """Every target within radius_arcsec, nearest first, with its signals and their sources.
+
+        Unbounded (no page limit) and correct across RA 0/360 and near the poles.
+        """
+        from exoplanet_db.services.reconciliation import angular_distance_arcsec
+
+        r_deg = radius_arcsec / 3600.0
+        dec_lo, dec_hi = max(-90.0, dec_deg - r_deg), min(90.0, dec_deg + r_deg)
+        cond = (Target.dec_deg >= dec_lo) & (Target.dec_deg <= dec_hi)
+        if dec_hi < 89.9 and dec_lo > -89.9:
+            cos_edge = min(math.cos(math.radians(dec_lo)), math.cos(math.radians(dec_hi)))
+            ra_half = min(180.0, r_deg / max(cos_edge, 1e-6))
+            ra_lo, ra_hi = ra_deg - ra_half, ra_deg + ra_half
+            if ra_half < 180.0:
+                if ra_lo < 0:
+                    ra_cond = (Target.ra_deg >= ra_lo + 360.0) | (Target.ra_deg <= ra_hi)
+                elif ra_hi >= 360.0:
+                    ra_cond = (Target.ra_deg >= ra_lo) | (Target.ra_deg <= ra_hi - 360.0)
+                else:
+                    ra_cond = (Target.ra_deg >= ra_lo) & (Target.ra_deg <= ra_hi)
+                cond = cond & ra_cond
+        targets = (
+            await self.session.execute(
+                select(Target)
+                .where(cond)
+                .options(selectinload(Target.signals).selectinload(Signal.reports))
+            )
+        ).scalars()
+        hits = []
+        for t in targets:
+            sep = angular_distance_arcsec(ra_deg, dec_deg, t.ra_deg, t.dec_deg)
+            if sep <= radius_arcsec:
+                hits.append({"target": t, "separation_arcsec": sep})
+        hits.sort(key=lambda h: h["separation_arcsec"])
+        return hits
+
     async def get_stats(self) -> dict[str, Any]:
         disp_query = select(Signal.current_disposition, func.count(Signal.id)).group_by(
             Signal.current_disposition
@@ -440,35 +526,7 @@ class CatalogService:
         candidates_total = planet_candidates + unclassified_signals
         false_positives = disp_counts.get("false_positive", 0)
 
-        source_rows = (
-            await self.session.execute(
-                select(
-                    Report.source_name,
-                    func.count(func.distinct(Report.signal_id)),
-                    func.count(Report.id),
-                ).group_by(Report.source_name)
-            )
-        ).all()
-        snapshot_rows = (
-            await self.session.execute(
-                select(PublishedSnapshot.source_name, func.max(PublishedSnapshot.snapshot_utc)).group_by(
-                    PublishedSnapshot.source_name
-                )
-            )
-        ).all()
-        last_snapshot = {name: ts for name, ts in snapshot_rows}
-        sources = sorted(
-            (
-                {
-                    "source_name": name,
-                    "signals": n_signals,
-                    "reports": n_reports,
-                    "last_ingested_utc": last_snapshot.get(name),
-                }
-                for name, n_signals, n_reports in source_rows
-            ),
-            key=lambda r: -r["signals"],
-        )
+        sources = await self.get_source_status()
 
         in_nasa_table = (
             await self.session.execute(

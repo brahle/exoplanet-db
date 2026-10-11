@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 import os
 from datetime import datetime
 from typing import Any
@@ -10,7 +9,6 @@ from mcp.server import MCPServer
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from exoplanet_db.services.catalog import CatalogService
-from exoplanet_db.services.reconciliation import angular_distance_arcsec
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 EXOPLANET_API_URL = os.getenv("EXOPLANET_API_URL", "https://exoplanets.brahle.com").rstrip("/")
@@ -45,7 +43,10 @@ async def lookup_target(identifier: str) -> dict[str, Any]:
             service = CatalogService(session)
             targets, _ = await service.list_systems(search=identifier, limit=10)
             if not targets:
-                return {"found": False, "message": f"No stellar system found matching '{identifier}'"}
+                return {
+                    "found": False,
+                    "message": f"No stellar system found matching '{identifier}'",
+                }
 
             results = []
             for t in targets:
@@ -289,6 +290,100 @@ async def get_candidate_dossier(candidate_id: str) -> dict[str, Any]:
         }
 
 
+HARMONIC_RATIOS = (0.25, 1 / 3, 0.5, 2.0, 3.0, 4.0)
+SAME_STAR_ARCSEC = 2.5
+KNOWN_UNINDEXED_SOURCES = [
+    "arxiv_astro_ph_ep_recent_preprints",
+    "zenodo_community_unregistered_dossiers",
+]
+NOVELTY_WARNING = (
+    "Absence of matches in checked sources does not establish scientific discovery priority. "
+    "Unindexed preprints, literature back-catalogues, or uncalibrated stellar blend systematics may exist."
+)
+
+
+def _cone_items_from_db(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    items = []
+    for h in hits:
+        t = h["target"]
+        items.append(
+            {
+                "id": t.id,
+                "primary_name": t.primary_name,
+                "tic_id": t.tic_id,
+                "separation_arcsec": h["separation_arcsec"],
+                "signals": [
+                    {
+                        "id": s.id,
+                        "display_name": s.display_name,
+                        "period_d": s.primary_period_d if (s.primary_period_d or 0) > 0 else None,
+                        "current_disposition": s.current_disposition,
+                        "sources": sorted({r.source_name for r in s.reports}),
+                        "source_keys": sorted({r.source_key for r in s.reports}),
+                    }
+                    for s in t.signals
+                ],
+            }
+        )
+    return items
+
+
+def _near_matches(
+    items: list[dict[str, Any]],
+    period_d: float,
+    period_tolerance_percent: float,
+    harmonic_tolerance_percent: float,
+) -> list[dict[str, Any]]:
+    matches = []
+    for t in items:
+        sep = t["separation_arcsec"]
+        for s in t["signals"]:
+            p = s.get("period_d")
+            base = {
+                "candidate_id": s["id"],
+                "display_name": s["display_name"],
+                "target_name": t["primary_name"],
+                "tic_id": t.get("tic_id"),
+                "angular_separation_arcsec": round(sep, 2),
+                "disposition": s["current_disposition"],
+                "sources": s.get("sources", []),
+                "source_keys": s.get("source_keys", []),
+            }
+            if not p:
+                # No period to compare (single transits, imaging): only relevant on the same star
+                if sep <= SAME_STAR_ARCSEC:
+                    matches.append(
+                        {
+                            **base,
+                            "catalog_period_d": None,
+                            "period_ratio": None,
+                            "match_reason": "same_star_period_unknown",
+                        }
+                    )
+                continue
+            ratio = p / period_d
+            if abs(p - period_d) / period_d * 100.0 <= period_tolerance_percent:
+                reason = "period_match"
+            elif any(
+                abs(ratio - h) / h * 100.0 <= harmonic_tolerance_percent for h in HARMONIC_RATIOS
+            ):
+                reason = "harmonic_alias"
+            else:
+                continue
+            matches.append(
+                {
+                    **base,
+                    "catalog_period_d": p,
+                    "period_ratio": round(ratio, 4),
+                    "match_reason": reason,
+                }
+            )
+    matches.sort(
+        key=lambda m: (m["match_reason"] != "period_match", m["angular_separation_arcsec"])
+    )
+    return matches
+
+
 @mcp.tool(name="check_novelty")
 async def check_novelty(
     ra_deg: float,
@@ -296,154 +391,63 @@ async def check_novelty(
     period_d: float,
     cone_radius_arcsec: float = 30.0,
     period_tolerance_percent: float = 1.0,
+    harmonic_tolerance_percent: float = 1.0,
 ) -> dict[str, Any]:
     """
-    Checks novelty of a candidate signal against published snapshots.
-    Strictly returns an evidentiary snapshot (never a boolean):
-    - Lists all checked source snapshots with their timestamps and commit SHAs
-    - Lists near-matches (targets within cone radius, period harmonics P/2, 2P, 3P)
-    - Lists known unindexed sources (e.g. arXiv preprints).
+    Checks a signal against every indexed catalogue. Returns evidence, never a boolean:
+    - checked_sources: one entry per catalogue with its current coverage (reports and
+      signals indexed, last ingest time, pinned commit for git-hosted sources)
+    - near_matches: catalogued signals inside the cone at the same period or a harmonic
+      (1/4, 1/3, 1/2, 2, 3, 4), with every catalogue that reports each one
+    - cone_targets_searched: all catalogued targets inside the cone (searched exhaustively,
+      including across RA 0/360)
+    cone_radius_arcsec is capped at 3600.
     """
-    deg_radius = cone_radius_arcsec / 3600.0
-    cos_dec = max(0.01, math.cos(math.radians(dec_deg)))
-    ra_delta = deg_radius / cos_dec
+    if not period_d or period_d <= 0:
+        raise ValueError("period_d must be positive")
+    radius = min(float(cone_radius_arcsec), 3600.0)
 
     if AsyncSessionLocal is not None:
         async with AsyncSessionLocal() as session:
             service = CatalogService(session)
-            snapshots = await service.list_published_snapshots()
-
-            targets, _ = await service.list_systems(
-                ra_min=max(0.0, ra_deg - ra_delta),
-                ra_max=min(360.0, ra_deg + ra_delta),
-                dec_min=max(-90.0, dec_deg - deg_radius),
-                dec_max=min(90.0, dec_deg + deg_radius),
-                limit=50,
-            )
-
-            near_matches = []
-            for t in targets:
-                dist = angular_distance_arcsec(ra_deg, dec_deg, t.ra_deg, t.dec_deg)
-                if dist <= cone_radius_arcsec:
-                    for s in t.signals:
-                        ratio = s.primary_period_d / period_d
-                        p_diff_pct = abs(s.primary_period_d - period_d) / period_d * 100.0
-
-                        is_period_match = p_diff_pct <= period_tolerance_percent
-                        is_harmonic = any(abs(ratio - h) / h < 0.01 for h in [0.5, 2.0, 3.0, 0.333333])
-
-                        if is_period_match or is_harmonic:
-                            near_matches.append(
-                                {
-                                    "candidate_id": s.id,
-                                    "target_name": t.primary_name,
-                                    "tic_id": t.tic_id,
-                                    "angular_separation_arcsec": round(dist, 2),
-                                    "catalog_period_d": s.primary_period_d,
-                                    "period_ratio": round(ratio, 4),
-                                    "match_reason": "period_match"
-                                    if is_period_match
-                                    else "harmonic_alias",
-                                    "disposition": s.current_disposition,
-                                    "limits": s.scientific_limits,
-                                }
-                            )
-
-            checked_sources = [
+            items = _cone_items_from_db(await service.cone_search(ra_deg, dec_deg, radius))
+            sources = [
                 {
-                    "source": snap.source_name,
-                    "snapshot_utc": snap.snapshot_utc.isoformat(),
-                    "commit_sha": snap.commit_sha,
-                    "record_count": snap.record_count,
+                    **src,
+                    "last_ingested_utc": src["last_ingested_utc"].isoformat()
+                    if src["last_ingested_utc"]
+                    else None,
                 }
-                for snap in snapshots
+                for src in await service.get_source_status()
             ]
+    else:
+        async with httpx.AsyncClient(base_url=EXOPLANET_API_URL, timeout=30.0) as client:
+            resp = await client.get(
+                "/v1/cone",
+                params={"ra_deg": ra_deg % 360.0, "dec_deg": dec_deg, "radius_arcsec": radius},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            items = data["items"]
+            sources = data["sources"]
 
-            status = "no_match_in_checked_sources" if not near_matches else "near_matches_found"
-
-            return {
-                "status": status,
-                "checked_sources": checked_sources,
-                "known_unindexed_sources": [
-                    "arxiv_astro_ph_ep_recent_preprints",
-                    "zenodo_community_unregistered_dossiers",
-                ],
-                "near_matches": near_matches,
-                "epistemic_warning": (
-                    "Absence of matches in checked sources does not establish scientific discovery priority. "
-                    "Unindexed preprints, literature back-catalogues, or uncalibrated stellar blend systematics may exist."
-                ),
-            }
-
-    async with httpx.AsyncClient(base_url=EXOPLANET_API_URL, timeout=15.0) as client:
-        snaps_resp = await client.get("/v1/snapshots")
-        snapshots_data = snaps_resp.json() if snaps_resp.status_code == 200 else []
-
-        targets_resp = await client.get(
-            "/v1/systems",
-            params={
-                "ra_min": max(0.0, ra_deg - ra_delta),
-                "ra_max": min(360.0, ra_deg + ra_delta),
-                "dec_min": max(-90.0, dec_deg - deg_radius),
-                "dec_max": min(90.0, dec_deg + deg_radius),
-                "limit": 50,
-            },
-        )
-        targets_items = targets_resp.json().get("items", []) if targets_resp.status_code == 200 else []
-
-        near_matches = []
-        for t in targets_items:
-            dist = angular_distance_arcsec(ra_deg, dec_deg, t["ra_deg"], t["dec_deg"])
-            if dist <= cone_radius_arcsec:
-                sys_resp = await client.get(f"/v1/systems/{t['id']}")
-                if sys_resp.status_code == 200:
-                    candidates = sys_resp.json().get("candidates", [])
-                    for s in candidates:
-                        p = s["period_d"]
-                        ratio = p / period_d
-                        p_diff_pct = abs(p - period_d) / period_d * 100.0
-                        is_period_match = p_diff_pct <= period_tolerance_percent
-                        is_harmonic = any(abs(ratio - h) / h < 0.01 for h in [0.5, 2.0, 3.0, 0.333333])
-                        if is_period_match or is_harmonic:
-                            near_matches.append(
-                                {
-                                    "candidate_id": s["id"],
-                                    "target_name": t["primary_name"],
-                                    "tic_id": t.get("tic_id"),
-                                    "angular_separation_arcsec": round(dist, 2),
-                                    "catalog_period_d": p,
-                                    "period_ratio": round(ratio, 4),
-                                    "match_reason": "period_match"
-                                    if is_period_match
-                                    else "harmonic_alias",
-                                    "disposition": s["current_disposition"],
-                                    "limits": s.get("scientific_limits", []),
-                                }
-                            )
-
-        checked_sources = [
-            {
-                "source": snap.get("source_name"),
-                "snapshot_utc": snap.get("snapshot_utc"),
-                "commit_sha": snap.get("commit_sha"),
-                "record_count": snap.get("record_count"),
-            }
-            for snap in snapshots_data
-        ]
-        status = "no_match_in_checked_sources" if not near_matches else "near_matches_found"
-        return {
-            "status": status,
-            "checked_sources": checked_sources,
-            "known_unindexed_sources": [
-                "arxiv_astro_ph_ep_recent_preprints",
-                "zenodo_community_unregistered_dossiers",
-            ],
-            "near_matches": near_matches,
-            "epistemic_warning": (
-                "Absence of matches in checked sources does not establish scientific discovery priority. "
-                "Unindexed preprints, literature back-catalogues, or uncalibrated stellar blend systematics may exist."
-            ),
-        }
+    near = _near_matches(items, period_d, period_tolerance_percent, harmonic_tolerance_percent)
+    return {
+        "status": "near_matches_found" if near else "no_match_in_checked_sources",
+        "query": {
+            "ra_deg": ra_deg,
+            "dec_deg": dec_deg,
+            "period_d": period_d,
+            "cone_radius_arcsec": radius,
+            "period_tolerance_percent": period_tolerance_percent,
+            "harmonic_tolerance_percent": harmonic_tolerance_percent,
+        },
+        "checked_sources": sources,
+        "cone_targets_searched": len(items),
+        "near_matches": near,
+        "known_unindexed_sources": KNOWN_UNINDEXED_SOURCES,
+        "epistemic_warning": NOVELTY_WARNING,
+    }
 
 
 @mcp.tool(name="get_observation_queue")
@@ -513,5 +517,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-

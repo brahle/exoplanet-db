@@ -41,10 +41,7 @@ class IngestionRunner:
             tic = str(row.get("tic_id") or "").replace("TIC", "").strip() or None
             gaia = (
                 # gaia_id is a DR2 designation; only a DR3 id belongs in gaia_dr3_id
-                str(row.get("gaia_dr3_id") or "")
-                .replace("Gaia DR3", "")
-                .strip()
-                or None
+                str(row.get("gaia_dr3_id") or "").replace("Gaia DR3", "").strip() or None
             )
             period = float(row.get("pl_orbper", 0.0)) if row.get("pl_orbper") is not None else None
             period_err = (

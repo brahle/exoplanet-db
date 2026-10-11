@@ -107,8 +107,9 @@ class EumemicIngest:
         records: list[dict[str, Any]],
         commit_sha: str = "HEAD",
         source_file: str = "results_public/candidates.csv",
+        record_snapshot: bool = True,
     ) -> int:
-        """Ingests candidates parsed from eumemic/exoplanets."""
+        """Ingests candidates parsed from eumemic/exoplanets (one file's worth of records)."""
         now = datetime.now(UTC)
         count = 0
 
@@ -221,21 +222,22 @@ class EumemicIngest:
             ephem_fit = await upsert_fit(self.session, ephem_fit)
             count += 1
 
-        # Snapshot
-        snapshot = PublishedSnapshot(
-            source_name="eumemic/exoplanets",
-            snapshot_utc=now,
-            commit_sha=commit_sha,
-            record_count=count,
-            status="validated",
-            validation_metrics={
-                "source_file": source_file,
-                "ingested_candidates": count,
-                "license": "CC BY 4.0",
-            },
-            published_at=now,
-        )
-        self.session.add(snapshot)
+        if record_snapshot:
+            self.session.add(
+                PublishedSnapshot(
+                    source_name="eumemic/exoplanets",
+                    snapshot_utc=now,
+                    commit_sha=commit_sha,
+                    record_count=count,
+                    status="validated",
+                    validation_metrics={
+                        "source_file": source_file,
+                        "ingested_candidates": count,
+                        "license": "CC BY 4.0",
+                    },
+                    published_at=now,
+                )
+            )
         await self.session.commit()
         return count
 
@@ -317,9 +319,27 @@ async def fetch_and_ingest_eumemic(session: AsyncSession) -> int:
     ingest = EumemicIngest(session)
     total = 0
     seen: set[str] = set()
+    per_file: dict[str, int] = {}
     for source_file, records in await fetch_eumemic_candidates(sha):
         fresh = [r for r in records if r["source_key"] not in seen]
         seen.update(r["source_key"] for r in fresh)
-        total += await ingest.ingest_candidates(fresh, commit_sha=sha, source_file=source_file)
+        n = await ingest.ingest_candidates(
+            fresh, commit_sha=sha, source_file=source_file, record_snapshot=False
+        )
+        per_file[source_file] = n
+        total += n
+    now = datetime.now(UTC)
+    session.add(
+        PublishedSnapshot(
+            source_name="eumemic/exoplanets",
+            snapshot_utc=now,
+            commit_sha=sha,
+            record_count=total,
+            status="validated",
+            validation_metrics={"files": per_file, "license": "CC BY 4.0"},
+            published_at=now,
+        )
+    )
+    await session.commit()
     logger.info("eumemic/exoplanets @ %s: %d published candidates", sha[:8], total)
     return total

@@ -111,7 +111,11 @@ app.mount("/sse", mcp.sse_app(sse_path="/", transport_security=mcp_security))
 
 PORTAL_STATIC_DIR = Path(__file__).resolve().parent.parent / "portal" / "static"
 if not (PORTAL_STATIC_DIR / "index.html").exists():
-    for fallback in [Path("/app/static"), Path("/app/src/exoplanet_db/portal/static"), Path("src/exoplanet_db/portal/static")]:
+    for fallback in [
+        Path("/app/static"),
+        Path("/app/src/exoplanet_db/portal/static"),
+        Path("src/exoplanet_db/portal/static"),
+    ]:
         if (fallback / "index.html").exists():
             PORTAL_STATIC_DIR = fallback
             break
@@ -211,7 +215,9 @@ class CandidateSummary(BaseModel):
 class SourceReference(BaseModel):
     source_name: str
     source_key: str | None = None
-    url: str | None = Field(None, description="Public landing page for this report, when one exists")
+    url: str | None = Field(
+        None, description="Public landing page for this report, when one exists"
+    )
     author_or_team: str | None = None
     license: str | None = None
     commit_sha: str | None = None
@@ -306,6 +312,36 @@ class SourceStats(BaseModel):
     signals: int = Field(description="Distinct signals with at least one report from this source")
     reports: int
     last_ingested_utc: datetime | None = None
+    commit_sha: str | None = Field(None, description="Pinned revision for git-hosted sources")
+
+
+class ConeSignal(BaseModel):
+    id: str
+    display_name: str
+    period_d: float | None = None
+    epoch_bjd: float | None = None
+    current_disposition: str
+    sources: list[str] = Field(description="Every catalogue reporting this signal")
+    source_keys: list[str] = Field(default_factory=list)
+
+
+class ConeTarget(BaseModel):
+    id: str
+    primary_name: str
+    tic_id: str | None = None
+    ra_deg: float
+    dec_deg: float
+    separation_arcsec: float
+    signals: list[ConeSignal]
+
+
+class ConeSearchResponse(BaseModel):
+    ra_deg: float
+    dec_deg: float
+    radius_arcsec: float
+    total: int
+    items: list[ConeTarget]
+    sources: list[SourceStats] = Field(description="Coverage of every source at query time")
 
 
 class CatalogStatsResponse(BaseModel):
@@ -342,6 +378,59 @@ async def get_catalog_stats(
     service = CatalogService(session)
     stats = await service.get_stats()
     return CatalogStatsResponse(**stats)
+
+
+@app.get("/v1/sources", response_model=list[SourceStats], tags=["Catalog"])
+async def list_sources(session: AsyncSession = Depends(get_session)):
+    """Current coverage per source: indexed reports/signals, last ingest, pinned commit."""
+    return [SourceStats(**s) for s in await CatalogService(session).get_source_status()]
+
+
+@app.get("/v1/cone", response_model=ConeSearchResponse, tags=["Catalog"])
+async def cone_search(
+    ra_deg: float = Query(..., ge=0.0, lt=360.0),
+    dec_deg: float = Query(..., ge=-90.0, le=90.0),
+    radius_arcsec: float = Query(30.0, gt=0.0, le=3600.0),
+    session: AsyncSession = Depends(get_session),
+):
+    """Every catalogued target within the radius (no paging, RA-wrap safe), nearest first."""
+    service = CatalogService(session)
+    hits = await service.cone_search(ra_deg, dec_deg, radius_arcsec)
+    items = []
+    for h in hits:
+        t = h["target"]
+        items.append(
+            ConeTarget(
+                id=t.id,
+                primary_name=t.primary_name,
+                tic_id=t.tic_id,
+                ra_deg=t.ra_deg,
+                dec_deg=t.dec_deg,
+                separation_arcsec=round(h["separation_arcsec"], 3),
+                signals=[
+                    ConeSignal(
+                        id=s.id,
+                        display_name=s.display_name,
+                        period_d=s.primary_period_d if (s.primary_period_d or 0) > 0 else None,
+                        epoch_bjd=s.primary_epoch_bjd
+                        if (s.primary_epoch_bjd or 0) > 2400000
+                        else None,
+                        current_disposition=s.current_disposition,
+                        sources=sorted({r.source_name for r in s.reports}),
+                        source_keys=sorted({r.source_key for r in s.reports}),
+                    )
+                    for s in t.signals
+                ],
+            )
+        )
+    return ConeSearchResponse(
+        ra_deg=ra_deg,
+        dec_deg=dec_deg,
+        radius_arcsec=radius_arcsec,
+        total=len(items),
+        items=items,
+        sources=[SourceStats(**s) for s in await service.get_source_status()],
+    )
 
 
 @app.get("/v1/systems", response_model=PaginatedResponse, tags=["Catalog"])
@@ -430,7 +519,9 @@ async def get_system(
 
 @app.get("/v1/candidates", response_model=PaginatedResponse, tags=["Catalog"])
 async def list_candidates(
-    search: str | None = Query(None, description="Search by candidate name, target name, TIC ID, or Gaia ID"),
+    search: str | None = Query(
+        None, description="Search by candidate name, target name, TIC ID, or Gaia ID"
+    ),
     source: str | None = Query(
         None,
         description="Filter by data source: nasa_pscomppars, nasa_toi, exofop_ctoi, eumemic/exoplanets, git:brahle/exoplanet-candidates",
@@ -546,7 +637,10 @@ async def get_population(
     radius_earth is the published radius when the catalogue has one, otherwise R* x sqrt(depth).
     """
     now = time.monotonic()
-    if _POPULATION_CACHE["body"] is None or now - _POPULATION_CACHE["at"] > POPULATION_CACHE_SECONDS:
+    if (
+        _POPULATION_CACHE["body"] is None
+        or now - _POPULATION_CACHE["at"] > POPULATION_CACHE_SECONDS
+    ):
         cols = await CatalogService(session).get_population()
         body = json.dumps({**cols, "count": len(cols["id"])}, separators=(",", ":")).encode()
         _POPULATION_CACHE.update(at=now, body=body, gz=gzip.compress(body, 6))
@@ -562,10 +656,12 @@ async def get_population(
 
 @app.get("/v1/snapshots", tags=["Catalog"])
 async def list_snapshots(
+    limit: int = Query(200, ge=1, le=2000, description="Newest first"),
     session: AsyncSession = Depends(get_session),
 ):
+    """Ingest history (one row per source per run). For current coverage use /v1/sources."""
     service = CatalogService(session)
-    snapshots = await service.list_published_snapshots()
+    snapshots = await service.list_published_snapshots(limit=limit)
     return [
         {
             "id": s.id,

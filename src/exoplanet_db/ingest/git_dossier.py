@@ -85,9 +85,13 @@ class GitDossierIngest:
         dossier_dir: Path,
         commit_sha: str,
         git_repo: str = "brahle/exoplanet-candidates",
+        record_snapshot: bool = True,
     ) -> Signal:
         """
         Validates and ingests a single candidate dossier directory.
+
+        record_snapshot=False when called from ingest_repository, which records one
+        snapshot for the whole run instead of one per dossier.
         """
         # 1. Verify manifest
         verified_hashes = self.verify_evidence_manifest(dossier_dir)
@@ -267,19 +271,21 @@ class GitDossierIngest:
         repro_run = await upsert_repro_run(self.session, repro_run)
 
         # 9. Published snapshot record
-        snapshot = PublishedSnapshot(
-            source_name=f"git:{git_repo}",
-            snapshot_utc=now,
-            commit_sha=commit_sha,
-            record_count=1,
-            status="validated",
-            validation_metrics={
-                "candidate": dossier.id,
-                "verified_files": len(verified_hashes),
-            },
-            published_at=now,
-        )
-        self.session.add(snapshot)
+        if record_snapshot:
+            self.session.add(
+                PublishedSnapshot(
+                    source_name=f"git:{git_repo}",
+                    snapshot_utc=now,
+                    commit_sha=commit_sha,
+                    record_count=1,
+                    status="validated",
+                    validation_metrics={
+                        "candidate": dossier.id,
+                        "verified_files": len(verified_hashes),
+                    },
+                    published_at=now,
+                )
+            )
         await self.session.commit()
         return signal
 
@@ -313,6 +319,7 @@ class GitDossierIngest:
                             dossier_dir=item,
                             commit_sha=commit_sha,
                             git_repo=git_repo,
+                            record_snapshot=False,
                         )
                     except Exception as exc:
                         await self.session.rollback()
@@ -320,6 +327,19 @@ class GitDossierIngest:
                         logger.warning("Dossier %s rejected: %s", item.name, exc)
                         continue
                     ingested.append(sig)
+        now = datetime.now(UTC)
+        self.session.add(
+            PublishedSnapshot(
+                source_name=f"git:{git_repo}",
+                snapshot_utc=now,
+                commit_sha=commit_sha,
+                record_count=len(ingested),
+                status="validated" if not failures else "partial",
+                validation_metrics={"ingested": len(ingested), "rejected": failures[:50]},
+                published_at=now,
+            )
+        )
+        await self.session.commit()
         if failures:
             raise DossierValidationError(
                 f"{len(failures)} of {len(failures) + len(ingested)} dossiers rejected "
