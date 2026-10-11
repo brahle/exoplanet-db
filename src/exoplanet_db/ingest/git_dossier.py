@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from exoplanet_db.ingest import dossier_vetting
 from exoplanet_db.ingest.common import (
     signal_for_existing_report,
     upsert_fit,
@@ -60,8 +62,17 @@ class GitDossierIngest:
     and publishes staged snapshots.
     """
 
-    def __init__(self, session: AsyncSession):
+    def __init__(
+        self,
+        session: AsyncSession,
+        known_hashes: dict[str, str] | None = None,
+        reviews: dict[str, dict[str, Any]] | None = None,
+    ):
         self.session = session
+        # Repo-relative path -> sha256, for files hashed while streaming and never written out
+        self.known_hashes = known_hashes
+        # Supplementary physical-fit reviews by dossier id (reviews/*.json)
+        self.reviews = reviews or {}
 
     def verify_evidence_manifest(self, dossier_dir: Path) -> dict[str, str]:
         """
@@ -80,15 +91,21 @@ class GitDossierIngest:
         for file_entry in files:
             rel_path = file_entry["path"]
             expected_sha = file_entry["sha256"]
-            target_path = dossier_dir / rel_path
-
-            if not target_path.exists():
-                raise DossierValidationError(
-                    f"Evidence file {rel_path} declared in manifest but missing on disk"
-                )
-
-            with open(target_path, "rb") as bf:
-                actual_sha = hashlib.sha256(bf.read()).hexdigest()
+            if self.known_hashes is not None:
+                key = f"{dossier_dir.parent.name}/{dossier_dir.name}/{rel_path}"
+                if key not in self.known_hashes:
+                    raise DossierValidationError(
+                        f"Evidence file {rel_path} declared in manifest but missing from the archive"
+                    )
+                actual_sha = self.known_hashes[key]
+            else:
+                target_path = dossier_dir / rel_path
+                if not target_path.exists():
+                    raise DossierValidationError(
+                        f"Evidence file {rel_path} declared in manifest but missing on disk"
+                    )
+                with open(target_path, "rb") as bf:
+                    actual_sha = hashlib.sha256(bf.read()).hexdigest()
 
             if actual_sha.lower() != expected_sha.lower():
                 raise DossierValidationError(
@@ -121,6 +138,11 @@ class GitDossierIngest:
             candidate_raw = json.load(f)
 
         dossier = CandidateDossier.model_validate(candidate_raw)
+
+        # 2b. Vetting evidence, read only from files the manifest seals
+        vetting = dossier_vetting.read_dossier(
+            dossier_dir, self.reviews.get(dossier.id), sealed=set(verified_hashes)
+        )
 
         # 3. Read receipt if present
         receipt_file = dossier_dir / "publication-receipt.json"
@@ -168,6 +190,7 @@ class GitDossierIngest:
             combined_limits.extend(dossier.novelty.limits)
         if dossier.reproducibility and dossier.reproducibility.limits:
             combined_limits.extend(dossier.reproducibility.limits)
+        combined_limits.extend(dossier_vetting.limit_lines(vetting))
 
         existing_signals_res = await self.session.execute(
             select(Signal).where(Signal.target_id == target.id)
@@ -184,7 +207,8 @@ class GitDossierIngest:
             epoch_err=dossier.signal.epoch_btjd.error,
         )
 
-        signal_disposition = (
+        # The dated assessment in vetting.json supersedes the one in candidate.json
+        signal_disposition = dossier_vetting.disposition(vetting) or (
             str(dossier.assessment.disposition) if dossier.assessment else "planet_candidate"
         )
         source_loc = (
@@ -212,9 +236,14 @@ class GitDossierIngest:
                 signal.current_disposition = signal_disposition
                 signal.source_localisation_status = source_loc
                 signal.timing_consistency_status = timing_cons
-            signal.scientific_limits = list(
-                dict.fromkeys((signal.scientific_limits or []) + combined_limits)
-            )
+            # Drop what the previous version of this dossier contributed, then add the current
+            previous = await self._previous_limits(git_repo, dossier.id)
+            kept = [
+                line
+                for line in dossier_vetting.strip_lines(signal.scientific_limits)
+                if line not in previous
+            ]
+            signal.scientific_limits = list(dict.fromkeys(kept + combined_limits))
         else:
             signal = Signal(
                 target_id=target.id,
@@ -250,7 +279,11 @@ class GitDossierIngest:
             epoch_err_d=dossier.signal.epoch_btjd.error,
             depth_ppm=dossier.signal.depth_ppm.value,
             duration_h=dossier.signal.duration_h.value,
-            raw_payload=candidate_raw,
+            raw_payload=(
+                {**candidate_raw, dossier_vetting.VETTING_KEY: vetting}
+                if vetting
+                else candidate_raw
+            ),
             license="CC BY 4.0",
         )
         report = await upsert_report(self.session, report)
@@ -314,6 +347,22 @@ class GitDossierIngest:
         await self.session.commit()
         return signal
 
+    async def _previous_limits(self, git_repo: str, dossier_id: str) -> set[str]:
+        """Limit lines the stored version of this dossier added to its signal."""
+        raw = (
+            await self.session.execute(
+                select(Report.raw_payload).where(
+                    Report.source_name == f"git:{git_repo}", Report.source_key == dossier_id
+                )
+            )
+        ).scalar()
+        if not isinstance(raw, dict):
+            return set()
+        lines: set[str] = set()
+        for section in ("signal", "novelty", "reproducibility"):
+            lines.update(((raw.get(section) or {}).get("limits")) or [])
+        return lines
+
     async def ingest_repository(
         self,
         repo_dir: Path,
@@ -332,6 +381,8 @@ class GitDossierIngest:
             except Exception:
                 commit_sha = "HEAD"
 
+        if not self.reviews:
+            self.reviews = dossier_vetting.load_reviews(repo_dir)
         candidates_dir = repo_dir / "candidates"
         ingested = []
         failures: list[str] = []
@@ -375,35 +426,102 @@ class GitDossierIngest:
 
 CANDIDATES_REPO = "brahle/exoplanet-candidates"
 
+# The only files the ingest reads; everything else under candidates/ is hashed and dropped
+_READ_FILES = re.compile(
+    r"^(candidates/[^/]+/(candidate|evidence-manifest|publication-receipt|vetting)\.json"
+    r"|candidates/[^/]+/evidence/(vetting-findings|external-report)\.json"
+    r"|reviews/[^/]+\.json)$"
+)
+
+
+class _IterReader:
+    """File-like read() over an iterator of byte chunks, for tarfile's stream mode."""
+
+    def __init__(self, chunks):
+        self._chunks = iter(chunks)
+        self._buf = b""
+
+    def read(self, n: int = -1) -> bytes:
+        while n < 0 or len(self._buf) < n:
+            chunk = next(self._chunks, None)
+            if chunk is None:
+                break
+            self._buf += chunk
+        if n < 0:
+            out, self._buf = self._buf, b""
+        else:
+            out, self._buf = self._buf[:n], self._buf[n:]
+        return out
+
+
+def stream_repository(chunks, dest: Path) -> dict[str, str]:
+    """Read a GitHub tarball once, as it arrives.
+
+    Every file under candidates/ and reviews/ is hashed (for the evidence manifests); only
+    the JSON the ingest reads is written to dest. Figures and arrays never touch disk or
+    memory as a whole, so the repository can grow without the ingest pod growing with it.
+    """
+    import tarfile
+
+    hashes: dict[str, str] = {}
+    with tarfile.open(fileobj=_IterReader(chunks), mode="r|gz") as tar:
+        for member in tar:
+            if not member.isfile():
+                continue
+            parts = member.name.split("/", 1)
+            if len(parts) != 2 or not parts[1].startswith(("candidates/", "reviews/")):
+                continue
+            rel = parts[1]
+            if ".." in Path(rel).parts:
+                continue
+            keep = _READ_FILES.match(rel) is not None
+            fh = tar.extractfile(member)
+            if fh is None:
+                continue
+            digest, kept = hashlib.sha256(), []
+            while chunk := fh.read(1 << 20):
+                digest.update(chunk)
+                if keep:
+                    kept.append(chunk)
+            hashes[rel] = digest.hexdigest()
+            if keep:
+                out = dest / rel
+                out.parent.mkdir(parents=True, exist_ok=True)
+                out.write_bytes(b"".join(kept))
+    return hashes
+
+
+def _download_and_stream(url: str, dest: Path) -> dict[str, str]:
+    import httpx
+
+    with httpx.Client(timeout=300.0, follow_redirects=True) as client:
+        with client.stream("GET", url) as resp:
+            resp.raise_for_status()
+            return stream_repository(resp.iter_bytes(1 << 20), dest)
+
 
 async def fetch_and_ingest_github_dossiers(
     session: AsyncSession, repo: str = CANDIDATES_REPO, ref: str = "main"
 ) -> int:
-    """Downloads `repo` at the current commit of `ref` and ingests every dossier.
+    """Streams `repo` at the current commit of `ref` and ingests every dossier.
 
     Uses the GitHub tarball (no git binary needed) and records the resolved commit, so
     each report links to a revision that exists and evidence hashes are checked against it.
     """
-    import tarfile
+    import asyncio
     import tempfile
-
-    import httpx
 
     from exoplanet_db.ingest.common import github_head_sha
 
     sha = await github_head_sha(repo, ref)
-    async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
-        resp = await client.get(f"https://codeload.github.com/{repo}/tar.gz/{sha}")
-        resp.raise_for_status()
     with tempfile.TemporaryDirectory() as tmp:
-        archive = Path(tmp) / "repo.tar.gz"
-        archive.write_bytes(resp.content)
-        with tarfile.open(archive) as tar:
-            tar.extractall(tmp, filter="data")
-        roots = [p for p in Path(tmp).iterdir() if p.is_dir()]
-        if len(roots) != 1:
-            raise DossierValidationError(f"Unexpected archive layout for {repo}@{sha}")
-        signals = await GitDossierIngest(session).ingest_repository(
-            roots[0], commit_sha=sha, git_repo=repo
+        root = Path(tmp)
+        hashes = await asyncio.to_thread(
+            _download_and_stream, f"https://codeload.github.com/{repo}/tar.gz/{sha}", root
+        )
+        if not any(k.startswith("candidates/") for k in hashes):
+            raise DossierValidationError(f"No candidates/ in the archive of {repo}@{sha}")
+        signals = await GitDossierIngest(session, known_hashes=hashes).ingest_repository(
+            root, commit_sha=sha, git_repo=repo
         )
     return len(signals)

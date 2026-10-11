@@ -1596,3 +1596,39 @@ a.source-link:hover,
   margin: 0;
   grid-column: span 2;
 }
+
+/* exoplanet-candidates vetting progress */
+.vet-stages {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  margin-bottom: 0.625rem;
+}
+
+.vet-stage {
+  font-size: 0.75rem;
+  font-family: var(--font-mono);
+  padding: 0.125rem 0.5rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-color);
+  color: var(--text-muted);
+}
+
+.vet-complete {
+  color: var(--accent-emerald);
+  border-color: var(--accent-emerald);
+}
+
+.vet-partial {
+  color: var(--accent-amber);
+  border-color: var(--accent-amber);
+}
+
+.vet-blocked {
+  color: var(--accent-rose);
+  border-color: var(--accent-rose);
+}
+
+.vet-warnings li::marker {
+  content: '⚠ ';
+}

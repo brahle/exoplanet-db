@@ -25,6 +25,22 @@ from exoplanet_db.services.system_physics import (
 )
 
 
+def _vetting(report: Report) -> dict[str, Any] | None:
+    """exoplanet-candidates vetting summary stored with a dossier report, with its link."""
+    raw = report.raw_payload if isinstance(report.raw_payload, dict) else {}
+    vetting = raw.get("_vetting")
+    if not isinstance(vetting, dict):
+        return None
+    repo = report.source_name.removeprefix("git:")
+    url = None
+    if report.commit_sha and report.source_name.startswith("git:"):
+        url = (
+            f"https://github.com/{repo}/blob/{report.commit_sha}/candidates/"
+            f"{report.source_key}/evidence/vetting-findings.json"
+        )
+    return {**vetting, "url": url}
+
+
 class CatalogService:
     """
     Shared Service Layer for Exoplanet DB.
@@ -263,6 +279,7 @@ class CatalogService:
                 "commit_sha": r.commit_sha,
                 "retrieval_utc": r.retrieval_utc,
                 "reported_disposition": r.reported_disposition,
+                "vetting": _vetting(r),
             }
             for r in reports
         ]

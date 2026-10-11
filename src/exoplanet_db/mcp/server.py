@@ -342,7 +342,9 @@ async def get_candidate_dossier(candidate_id: str) -> dict[str, Any]:
     """
     Full record for one candidate (full id or unique prefix of at least 8 characters): ephemeris
     with uncertainties, host star, disposition, planet score with the factors behind it,
-    localisation/timing status, scientific limits and every source with a link.
+    localisation/timing status, scientific limits and every source with a link. For
+    exoplanet-candidates dossiers, "vetting" holds the published vetting progress, warnings,
+    diagnostics, any matching external report and physical-fit review.
     """
     if AsyncSessionLocal is not None:
         async with AsyncSessionLocal() as session:
@@ -396,6 +398,9 @@ async def get_candidate_dossier(candidate_id: str) -> dict[str, Any]:
                     }
                     for src in detail["sources"]
                 ],
+                "vetting": next(
+                    (s["vetting"] for s in detail["sources"] if s.get("vetting")), None
+                ),
                 "harmonic_links": [
                     {
                         "harmonic_candidate_id": h.harmonic_signal_id,
@@ -460,6 +465,7 @@ async def get_candidate_dossier(candidate_id: str) -> dict[str, Any]:
             {k: src.get(k) for k in ("source_name", "source_key", "url", "reported_disposition")}
             for src in c.get("sources", [])
         ],
+        "vetting": next((s["vetting"] for s in c.get("sources", []) if s.get("vetting")), None),
         "harmonic_links": [],
     }
 

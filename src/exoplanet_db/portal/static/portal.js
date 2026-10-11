@@ -128,6 +128,65 @@ const SOURCE_LABELS = {
   'eumemic/exoplanets:vetting': ['eumemic/exoplanets', 'vetting results on known signals', 'https://github.com/eumemic/exoplanets/tree/main/results_public'],
 };
 
+const VETTING_STAGES = [
+  ['screening', 'Screening'],
+  ['source_vetting', 'Source'],
+  ['physical_vetting', 'Physical'],
+  ['followup', 'Follow-up'],
+  ['validation', 'Validation'],
+  ['confirmation', 'Confirmation'],
+];
+const VETTING_STAGE_MARK = { complete: '✓', partial: '◐', blocked: '✕', not_started: '·' };
+const VETTING_WARNINGS = {
+  odd_even: 'Odd and even transits differ in depth',
+  phase_half_secondary: 'Possible secondary eclipse at phase 0.5',
+  nine_phase_scan_uncorrected: 'Dip at another phase in the nine-phase scan (uncorrected)',
+  binary_catalogue_match: 'Catalogued binary nearby at this period or an alias',
+  elevated_ruwe: 'Elevated Gaia RUWE (possible unresolved companion)',
+  external_adverse_report: 'Adverse report from another catalogue',
+  off_target_diagnostic: 'Difference images place the dip off the target',
+};
+
+function renderVetting(v) {
+  if (!v) return '';
+  const num = (x, d) => (typeof x === 'number' ? x.toFixed(d) : '—');
+  const stages = VETTING_STAGES.map(([k, label]) => {
+    const st = (v.stages || {})[k] || 'not_started';
+    return `<span class="vet-stage vet-${st}" title="${escapeHtml(st.replace(/_/g, ' '))}">${VETTING_STAGE_MARK[st] || '·'} ${label}</span>`;
+  }).join('');
+  const screen = { warnings: 'warnings', no_initial_warnings: 'no warnings', incomplete: 'incomplete' }[v.initial_screen] || v.initial_screen || '—';
+  const warnings = (v.warnings || []).map((w) => `<li>${escapeHtml(VETTING_WARNINGS[w] || w.replace(/_/g, ' '))}</li>`).join('');
+  const facts = [];
+  const lc = v.lightcurve || {};
+  if (lc.odd_even_contrast !== undefined) facts.push(`Odd/even contrast ${num(lc.odd_even_contrast, 2)} (nominal multiple, uncalibrated)`);
+  if (lc.phase_half_secondary_depth !== undefined) facts.push(`Phase-0.5 secondary depth ${num(lc.phase_half_secondary_depth, 2)} (nominal multiple, uncalibrated)`);
+  const cat = v.catalogues || {};
+  if (typeof cat.ruwe === 'number') facts.push(`Gaia RUWE ${num(cat.ruwe, 2)}`);
+  for (const m of cat.binary_matches || []) {
+    facts.push(`Binary match: ${escapeHtml(m.name || '?')} (${escapeHtml(m.catalogue || '')}, ${num(m.separation_arcsec, 1)}″, P ${num(m.period_d, 4)} d)`);
+  }
+  const src = v.source_diagnostics;
+  if (src) {
+    const off = src.target_offset_pixels;
+    facts.push(`Source diagnostics: ${escapeHtml(src.status || '—')}, sectors ${(src.sectors || []).join(', ') || '—'}${off ? `, dip ${off[0]}–${off[1]} px from target` : ''}`);
+  }
+  if (v.physical_pilot) facts.push(`Physical pilot: ${v.physical_pilot.sampling_qualified} of ${v.physical_pilot.scenarios} scenarios passed sampling qualification`);
+  const ext = v.external_report;
+  if (ext) facts.push(`External report (${escapeHtml(ext.source_file || '—')}): tier ${escapeHtml(ext.tier || '—')}${ext.reason ? `, ${escapeHtml(ext.reason)}` : ''}${ext.FPP ? `, FPP ${escapeHtml(ext.FPP)}` : ''}`);
+  const fit = v.physical_fit_review;
+  if (fit) facts.push(`Physical-fit review (${escapeHtml((fit.reviewed_utc || '').slice(0, 10))}): ${escapeHtml((fit.sampling || '').replace(/_/g, ' '))}; Rp/R★ ${num(fit.radius_ratio, 3)}, b ${num(fit.impact_parameter, 2)}, stellar density ${num(fit.density_ratio_to_catalogue, 2)}× catalogue (${num(fit.density_tension_prior_widths, 1)} prior widths)`);
+  return `
+    <section class="detail-section detail-card">
+      <h4 class="detail-section-title">Vetting (exoplanet-candidates${v.assessed_utc ? `, ${escapeHtml(v.assessed_utc.slice(0, 10))}` : ''})</h4>
+      <div class="vet-stages">${stages}</div>
+      <p class="detail-muted">Assessment: <strong>${escapeHtml((v.assessment || '—').replace(/_/g, ' '))}</strong> · initial light-curve/catalogue screen: <strong>${escapeHtml(screen)}</strong>${v.all_checks_available === false ? ' (not all checks available)' : ''}</p>
+      ${warnings ? `<ul class="detail-limits vet-warnings">${warnings}</ul>` : '<p class="detail-muted">No published warning flags.</p>'}
+      ${facts.length ? `<ul class="detail-limits">${facts.map((f) => `<li>${f}</li>`).join('')}</ul>` : ''}
+      ${(v.open_requirements || []).length ? `<p class="detail-muted"><strong>Still open:</strong> ${v.open_requirements.map((r) => escapeHtml(r.replace(/_/g, ' '))).join(', ')}</p>` : ''}
+      ${v.url ? `<p class="detail-links"><a href="${escapeHtml(v.url)}" target="_blank" rel="noopener noreferrer">Vetting findings ↗</a></p>` : ''}
+    </section>`;
+}
+
 function renderSourceStrip(sources) {
   const strip = document.getElementById('source-strip');
   if (!strip) return;
@@ -665,6 +724,8 @@ function renderDossier(c) {
           </table>
         </div>` : '<p class="detail-muted">No report rows are linked to this signal.</p>'}
     </section>
+
+    ${renderVetting((c.sources || []).map((s) => s.vetting).find(Boolean))}
 
     <section class="detail-section">
       <h4 class="detail-section-title">Scientific limits &amp; constraints</h4>

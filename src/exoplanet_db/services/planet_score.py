@@ -31,6 +31,17 @@ EUMEMIC_DISCARD = {
     "REPORTED": (0, "eumemic/exoplanets: already reported elsewhere"),
 }
 VETTING_SOURCE = "eumemic/exoplanets:vetting"
+# Warnings published in exoplanet-candidates' own vetting (vetting.json): (penalty, why)
+DOSSIER_WARNINGS = {
+    "off_target_diagnostic": (-20, "Difference images place the dip off the target"),
+    "binary_catalogue_match": (-10, "Catalogued binary nearby at this period or an alias"),
+    "odd_even": (-10, "Odd and even transits differ in depth"),
+    "phase_half_secondary": (-10, "Possible secondary eclipse at phase 0.5"),
+    "elevated_ruwe": (-5, "Elevated Gaia RUWE (possible unresolved companion)"),
+    "nine_phase_scan_uncorrected": (-3, "Dip at another phase in the nine-phase scan"),
+    "external_adverse_report": (-10, "Adverse report from another catalogue"),
+}
+DENSITY_TENSION_WIDTHS = 3.0
 
 
 @dataclass
@@ -49,6 +60,10 @@ class Evidence:
     star_radius_rsun: float | None = None
     published_radius_earth: float | None = None
     other_candidates_on_star: int = 0
+    # exoplanet-candidates vetting (report raw_payload["_vetting"])
+    dossier_warnings: set[str] = field(default_factory=set)
+    dossier_clean_screen: bool = False
+    density_tension_widths: float | None = None
 
 
 def _factor(label: str, delta: int) -> dict[str, Any]:
@@ -80,7 +95,7 @@ def score(e: Evidence) -> tuple[int, list[dict[str, Any]]]:
     elif e.ctoi_dispositions:
         base, label = 40, "ExoFOP community TOI"
     elif any(s.startswith("git:") for s in e.sources):
-        base, label = 20, "Provisional transit-like signal (unvetted dossier)"
+        base, label = 20, "Provisional transit-like signal (exoplanet-candidates dossier)"
     elif e.eumemic_discards:
         base, label = 30, "Transit-like signal documented by eumemic/exoplanets"
     else:
@@ -121,7 +136,9 @@ def score(e: Evidence) -> tuple[int, list[dict[str, Any]]]:
     # 4. Investigated and discarded elsewhere (counted in any eumemic release outweighs this)
     if not e.eumemic_tiers:
         for tier, reason in sorted(e.eumemic_discards.items()):
-            delta, label = EUMEMIC_DISCARD.get(tier, (-10, f"eumemic/exoplanets: tier {tier}, not counted"))
+            delta, label = EUMEMIC_DISCARD.get(
+                tier, (-10, f"eumemic/exoplanets: tier {tier}, not counted")
+            )
             if reason:
                 label = f"{label} ({reason})"
             factors.append(_factor(label, delta))
@@ -129,11 +146,36 @@ def score(e: Evidence) -> tuple[int, list[dict[str, Any]]]:
     if e.vetting_fails:
         factors.append(
             _factor(
-                "eumemic/exoplanets automated vetting failed: " + "; ".join(sorted(e.vetting_fails)),
+                "eumemic/exoplanets automated vetting failed: "
+                + "; ".join(sorted(e.vetting_fails)),
                 -10,
             )
         )
         total -= 10
+
+    # 4b. exoplanet-candidates' own vetting
+    for warning in sorted(e.dossier_warnings):
+        delta, label = DOSSIER_WARNINGS.get(warning, (-5, warning.replace("_", " ")))
+        if warning == "external_adverse_report" and e.eumemic_discards:
+            continue  # the eumemic verdict itself is already scored above
+        factors.append(_factor(f"exoplanet-candidates vetting: {label}", delta))
+        total += delta
+    if e.dossier_clean_screen and not e.dossier_warnings:
+        factors.append(
+            _factor(
+                "exoplanet-candidates vetting: initial light-curve and catalogue screen clean", 5
+            )
+        )
+        total += 5
+    if e.density_tension_widths is not None and e.density_tension_widths > DENSITY_TENSION_WIDTHS:
+        factors.append(
+            _factor(
+                "Physical-fit review: fitted stellar density "
+                f"{e.density_tension_widths:.0f} prior widths from the catalogue star's",
+                -15,
+            )
+        )
+        total -= 15
 
     # 5. Red flags from the transit itself
     radius = e.published_radius_earth
@@ -243,6 +285,19 @@ async def score_signals(session: AsyncSession) -> dict[str, int]:
                     break
         elif source == VETTING_SOURCE:
             e.vetting_fails.update(raw.get("fails") or [])
+        elif source.startswith("git:"):
+            vet = raw.get("_vetting") if isinstance(raw.get("_vetting"), dict) else None
+            if vet:
+                e.dossier_warnings.update(vet.get("warnings") or [])
+                e.dossier_clean_screen = vet.get(
+                    "initial_screen"
+                ) == "no_initial_warnings" and bool(vet.get("all_checks_available"))
+                review = vet.get("physical_fit_review") or {}
+                widths = review.get("density_tension_prior_widths")
+                if review.get("sampling") == "conditional_sampling_checks_passed" and isinstance(
+                    widths, int | float
+                ):
+                    e.density_tension_widths = widths
         elif source == "exofop_ctoi":
             e.ctoi_dispositions.add((reported or "PC").upper())
         elif source == "nasa_pscomppars":

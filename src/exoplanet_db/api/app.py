@@ -235,6 +235,11 @@ class SourceReference(BaseModel):
     commit_sha: str | None = None
     retrieval_utc: datetime | None = None
     reported_disposition: str | None = None
+    vetting: dict[str, Any] | None = Field(
+        None,
+        description="exoplanet-candidates dossiers only: vetting progress, warnings, "
+        "diagnostics and reviews published with the dossier",
+    )
 
 
 class HostStarResponse(TargetResponse):

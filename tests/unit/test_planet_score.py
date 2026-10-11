@@ -100,3 +100,49 @@ def test_eumemic_only_discard_has_its_own_base():
         eumemic_discards={"L": ""},
     )
     assert score(e)[0] == 20
+
+
+def test_dossier_vetting_warnings_clean_screen_and_density():
+    git = {"git:brahle/exoplanet-candidates"}
+    warned, factors = score(
+        Evidence(
+            "unclassified_transit_like_signal",
+            sources=git,
+            dossier_warnings={"off_target_diagnostic", "elevated_ruwe"},
+        )
+    )
+    assert warned == 1  # 20 - 5 - 20, floored
+    assert [f["delta"] for f in factors] == [20, -5, -20]
+
+    clean, factors = score(
+        Evidence("unclassified_transit_like_signal", sources=git, dossier_clean_screen=True)
+    )
+    assert clean == 25 and "screen clean" in factors[-1]["label"]
+
+    dense, factors = score(
+        Evidence("unclassified_transit_like_signal", sources=git, density_tension_widths=16.2)
+    )
+    assert dense == 5 and "stellar density" in factors[-1]["label"]
+    assert (
+        score(
+            Evidence("unclassified_transit_like_signal", sources=git, density_tension_widths=0.3)
+        )[0]
+        == 20
+    )
+
+
+def test_external_adverse_report_not_double_counted_with_eumemic_verdict():
+    both = Evidence(
+        "false_positive",
+        sources={"git:brahle/exoplanet-candidates", "eumemic/exoplanets"},
+        eumemic_discards={"C": "TRICERATOPS FPP >= 0.5"},
+        dossier_warnings={"external_adverse_report"},
+    )
+    _, factors = score(both)
+    assert not any("Adverse report" in f["label"] for f in factors)
+    alone = Evidence(
+        "unclassified_transit_like_signal",
+        sources={"git:brahle/exoplanet-candidates"},
+        dossier_warnings={"external_adverse_report"},
+    )
+    assert score(alone)[0] == 10
