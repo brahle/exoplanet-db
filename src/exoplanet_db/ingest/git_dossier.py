@@ -34,6 +34,25 @@ class DossierValidationError(Exception):
     pass
 
 
+HOST_PARAMETER_FIELDS = {
+    "radius_Rsun": "radius_rsun",
+    "mass_Msun": "mass_msun",
+    "teff_K": "teff_k",
+    "tmag": "tess_mag",
+}
+
+
+def host_parameters(host: dict[str, Any] | None) -> dict[str, float]:
+    """Reported values from a dossier's host.parameters block (schema 1.2)."""
+    params = (host or {}).get("parameters") or {}
+    out: dict[str, float] = {}
+    for key, attr in HOST_PARAMETER_FIELDS.items():
+        p = params.get(key) or {}
+        if p.get("status") == "reported" and isinstance(p.get("value"), int | float):
+            out[attr] = float(p["value"])
+    return out
+
+
 class GitDossierIngest:
     """
     Ingests vetted candidate dossiers from git repositories (such as brahle/exoplanet-candidates).
@@ -133,6 +152,12 @@ class GitDossierIngest:
             )
             self.session.add(target)
             await self.session.flush()
+        # Schema 1.2 publishes catalogue stellar parameters; fill whatever the star lacks
+        for attr, value in host_parameters(dossier.host).items():
+            if getattr(target, attr) is None:
+                setattr(target, attr, value)
+        if target.gaia_dr3_id is None and dossier.target.gaia_dr3:
+            target.gaia_dr3_id = str(dossier.target.gaia_dr3)
 
         # 5. Signal matching & creation
         # Collect limits from all sections

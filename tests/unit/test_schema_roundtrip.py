@@ -91,3 +91,30 @@ def test_upstream_nullable_fields_accepted():
         coordinates={"ra_deg": 153.44, "dec_deg": -43.49, "provenance": "TIC"},
     )
     assert target.gaia_dr3 is None
+
+
+def test_later_schema_versions_extend_without_breaking():
+    """Schema 1.2 adds target.catalogue_association and host; unknown fields are kept."""
+    import json
+    from pathlib import Path
+
+    from exoplanet_db.ingest.git_dossier import host_parameters
+    from exoplanet_db.schemas.dossier import CandidateDossier
+
+    raw = json.loads(
+        (Path(__file__).parents[1] / "fixtures" / "tic-464547401-s01.json").read_text()
+    )
+    raw["schema_version"] = "1.2"
+    raw["target"]["catalogue_association"] = {"status": "associated", "gaia_dr2": "1"}
+    raw["host"] = {
+        "status": "unresolved",
+        "parameters": {
+            "radius_Rsun": {"status": "reported", "value": 0.77},
+            "mass_Msun": {"status": "reported", "value": 0.84},
+            "teff_K": {"status": "unavailable", "value": None},
+        },
+    }
+    raw["some_future_block"] = {"anything": True}
+    dossier = CandidateDossier.model_validate(raw)
+    assert dossier.target.catalogue_association["status"] == "associated"
+    assert host_parameters(dossier.host) == {"radius_rsun": 0.77, "mass_msun": 0.84}
