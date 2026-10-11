@@ -9,7 +9,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from exoplanet_db.ingest.common import upsert_fit, upsert_report
+from exoplanet_db.ingest.common import signal_for_existing_report, upsert_fit, upsert_report
 from exoplanet_db.models import (
     EphemerisFit,
     PublishedSnapshot,
@@ -141,7 +141,9 @@ class EumemicIngest:
             signals_stmt = select(Signal).where(Signal.target_id == target.id)
             existing_signals = list((await self.session.execute(signals_stmt)).scalars().all())
 
-            matched_signal = match_signal_to_existing(
+            matched_signal = await signal_for_existing_report(
+                self.session, "eumemic/exoplanets", r["source_key"]
+            ) or match_signal_to_existing(
                 existing_signals=existing_signals,
                 cand_period=r["period_d"],
                 cand_epoch=r["t0_bjd_tdb"],

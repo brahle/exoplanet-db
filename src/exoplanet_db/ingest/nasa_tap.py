@@ -172,6 +172,7 @@ async def run_ingest(source: str = "all", limit: int | None = None) -> list[str]
     from exoplanet_db.ingest.exofop import fetch_and_ingest_ctois
     from exoplanet_db.ingest.git_dossier import fetch_and_ingest_github_dossiers
     from exoplanet_db.ingest.runner import IngestionRunner
+    from exoplanet_db.services.dedup import dedupe_signals
 
     db_url = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///exoplanet_db.sqlite")
     if db_url.startswith("postgres://"):
@@ -225,6 +226,14 @@ async def run_ingest(source: str = "all", limit: int | None = None) -> list[str]
                 await session.rollback()
                 failed.append(name)
                 print(f"[{name}] FAILED: {exc!r}", flush=True)
+
+    async with session_factory() as session:
+        try:
+            print(f"[dedup] {await dedupe_signals(session)}", flush=True)
+        except Exception as exc:
+            await session.rollback()
+            failed.append("dedup")
+            print(f"[dedup] FAILED: {exc!r}", flush=True)
 
     async with session_factory() as session:
         try:

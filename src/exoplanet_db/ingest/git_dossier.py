@@ -10,7 +10,12 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from exoplanet_db.ingest.common import upsert_fit, upsert_report, upsert_repro_run
+from exoplanet_db.ingest.common import (
+    signal_for_existing_report,
+    upsert_fit,
+    upsert_report,
+    upsert_repro_run,
+)
 from exoplanet_db.models import (
     EphemerisFit,
     PublishedSnapshot,
@@ -140,7 +145,9 @@ class GitDossierIngest:
         )
         existing_signals = list(existing_signals_res.scalars().all())
 
-        matched_signal = match_signal_to_existing(
+        matched_signal = await signal_for_existing_report(
+            self.session, f"git:{git_repo}", dossier.id
+        ) or match_signal_to_existing(
             existing_signals=existing_signals,
             cand_period=dossier.signal.period_d.value,
             cand_epoch=dossier.signal.epoch_bjd_tdb,

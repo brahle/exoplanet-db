@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from exoplanet_db.ingest.common import upsert_fit, upsert_report
+from exoplanet_db.ingest.common import signal_for_existing_report, upsert_fit, upsert_report
 from exoplanet_db.models import (
     EphemerisFit,
     PublishedSnapshot,
@@ -290,9 +290,9 @@ class IngestionRunner:
             existing_signals = sig_res.scalars().all()
 
             # Exact designation first, so an ephemeris match on another signal can't win
-            matched_signal: Signal | None = next(
-                (es for es in existing_signals if es.display_name == toidisplay), None
-            )
+            matched_signal: Signal | None = await signal_for_existing_report(
+                self.session, "nasa_toi", toidisplay
+            ) or next((es for es in existing_signals if es.display_name == toidisplay), None)
             for es in [] if matched_signal else existing_signals:
                 if period > 0 and es.primary_period_d > 0:
                     match_res = check_signal_match(

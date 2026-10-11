@@ -9,7 +9,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from exoplanet_db.ingest.common import upsert_fit, upsert_report
+from exoplanet_db.ingest.common import signal_for_existing_report, upsert_fit, upsert_report
 from exoplanet_db.models import (
     EphemerisFit,
     PublishedSnapshot,
@@ -128,9 +128,9 @@ class ExoFOPIngest:
                     await self.session.execute(select(Signal).where(Signal.target_id == target.id))
                 ).scalars()
             )
-            matched_signal = next(
-                (s for s in existing_signals if s.display_name == r["ctoi_id"]), None
-            )
+            matched_signal = await signal_for_existing_report(
+                self.session, "exofop_ctoi", r["ctoi_id"]
+            ) or next((s for s in existing_signals if s.display_name == r["ctoi_id"]), None)
             if matched_signal is None and period > 0 and epoch > 0:
                 matched_signal = match_signal_to_existing(
                     existing_signals=existing_signals,
@@ -232,9 +232,9 @@ EXOFOP_CTOI_URL = "https://exofop.ipac.caltech.edu/tess/download_ctoi.php?sort=c
 
 async def fetch_and_ingest_ctois(session: AsyncSession) -> int:
     """Downloads the full ExoFOP CTOI table and ingests every row."""
-    import httpx
-
     import asyncio
+
+    import httpx
 
     ingest = ExoFOPIngest(session)
     records: list[dict[str, Any]] = []

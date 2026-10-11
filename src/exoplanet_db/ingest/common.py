@@ -207,3 +207,24 @@ async def prune_orphan_signals(session: AsyncSession) -> list[str]:
         await session.commit()
         logger.info("Pruned %d signals without reports: %s", len(names), ", ".join(names))
     return names
+
+
+async def signal_for_existing_report(session: AsyncSession, source_name: str, source_key: str):
+    """The signal that already owns this source's report, if any.
+
+    Re-ingests reuse it, so a signal merged by de-duplication (and renamed after its most
+    authoritative source) keeps its reports instead of being recreated each run.
+    """
+    from exoplanet_db.models import Signal
+
+    return (
+        (
+            await session.execute(
+                select(Signal)
+                .join(Report, Report.signal_id == Signal.id)
+                .where(Report.source_name == source_name, Report.source_key == source_key)
+            )
+        )
+        .scalars()
+        .first()
+    )
