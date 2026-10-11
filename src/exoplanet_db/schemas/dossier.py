@@ -41,7 +41,8 @@ class PublicationStateEnum(StrEnum):
 class Measurement(BaseModel):
     model_config = ConfigDict(extra="forbid")
     value: float
-    error: float = Field(gt=0)
+    # Upstream schema: null marks an unavailable uncertainty (provisional duration/depth)
+    error: float | None = Field(default=..., gt=0)
 
 
 class StatusDetail(BaseModel):
@@ -63,7 +64,8 @@ class Coordinates(BaseModel):
 class TargetDossier(BaseModel):
     model_config = ConfigDict(extra="forbid")
     tic: str = Field(pattern=r"^[0-9]+$")
-    gaia_dr3: str = Field(pattern=r"^[0-9]+$")
+    # Null when no unambiguous Gaia DR3 association is established (upstream schema)
+    gaia_dr3: str | None = Field(default=..., pattern=r"^[0-9]+$")
     aliases: list[str]
     coordinates: Coordinates
 

@@ -70,3 +70,24 @@ def test_all_evidence_status_states():
         dossier = CandidateDossier.model_validate(data)
         assert dossier.assessment.source_localisation.status == status
         assert dossier.assessment.timing_consistency.status == status
+
+
+def test_upstream_nullable_fields_accepted():
+    """brahle/exoplanet-candidates schema allows null Gaia ids and null provisional errors."""
+    import pytest
+    from pydantic import ValidationError
+
+    from exoplanet_db.schemas.dossier import Measurement, TargetDossier
+
+    assert Measurement(value=2.05, error=None).error is None
+    with pytest.raises(ValidationError):
+        Measurement(value=2.05, error=0.0)
+    with pytest.raises(ValidationError):
+        Measurement(value=2.05)  # still required, just nullable
+    target = TargetDossier(
+        tic="101909456",
+        gaia_dr3=None,
+        aliases=["TIC 101909456"],
+        coordinates={"ra_deg": 153.44, "dec_deg": -43.49, "provenance": "TIC"},
+    )
+    assert target.gaia_dr3 is None

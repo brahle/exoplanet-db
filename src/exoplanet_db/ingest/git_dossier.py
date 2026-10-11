@@ -162,10 +162,23 @@ class GitDossierIngest:
 
         if matched_signal:
             signal = matched_signal
-            signal.current_disposition = signal_disposition
-            signal.source_localisation_status = source_loc
-            signal.timing_consistency_status = timing_cons
-            signal.scientific_limits = list(set((signal.scientific_limits or []) + combined_limits))
+            other_sources = (
+                await self.session.execute(
+                    select(Report.id).where(
+                        Report.signal_id == signal.id,
+                        Report.source_name != f"git:{git_repo}",
+                    )
+                )
+            ).first()
+            # Our provisional assessment only classifies signals no catalogue reports;
+            # it never downgrades a TOI or a confirmed planet to "unclassified".
+            if not other_sources:
+                signal.current_disposition = signal_disposition
+                signal.source_localisation_status = source_loc
+                signal.timing_consistency_status = timing_cons
+            signal.scientific_limits = list(
+                dict.fromkeys((signal.scientific_limits or []) + combined_limits)
+            )
         else:
             signal = Signal(
                 target_id=target.id,
@@ -218,6 +231,8 @@ class GitDossierIngest:
             covariance_method=dossier.signal.covariance_method,
             duration_h=dossier.signal.duration_h.value,
             depth_ppm=dossier.signal.depth_ppm.value,
+            duration_err_h=dossier.signal.duration_h.error,
+            depth_err_ppm=dossier.signal.depth_ppm.error,
             time_scale=dossier.signal.time_scale,
             fit_model=dossier.signal.model,
             is_coherent=True,
@@ -281,15 +296,28 @@ class GitDossierIngest:
 
         candidates_dir = repo_dir / "candidates"
         ingested = []
+        failures: list[str] = []
         if candidates_dir.exists():
             for item in sorted(candidates_dir.iterdir()):
                 if item.is_dir() and (item / "candidate.json").exists():
-                    sig = await self.ingest_dossier_directory(
-                        dossier_dir=item,
-                        commit_sha=commit_sha,
-                        git_repo=git_repo,
-                    )
+                    # One invalid dossier must not block the rest; each one commits on its own
+                    try:
+                        sig = await self.ingest_dossier_directory(
+                            dossier_dir=item,
+                            commit_sha=commit_sha,
+                            git_repo=git_repo,
+                        )
+                    except Exception as exc:
+                        await self.session.rollback()
+                        failures.append(f"{item.name}: {exc}")
+                        logger.warning("Dossier %s rejected: %s", item.name, exc)
+                        continue
                     ingested.append(sig)
+        if failures:
+            raise DossierValidationError(
+                f"{len(failures)} of {len(failures) + len(ingested)} dossiers rejected "
+                f"({len(ingested)} ingested): " + "; ".join(failures[:5])
+            )
         return ingested
 
 
