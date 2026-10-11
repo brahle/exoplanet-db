@@ -210,6 +210,31 @@ async def test_streamed_archive_hashes_everything_and_keeps_only_json(factory, t
         )
     )
 
+    # A later review of another kind must not displace the sampled one
+    (src / "reviews" / "point.json").write_text(
+        json.dumps(
+            {
+                "reviewed_utc": "2026-10-11T21:53:34Z",
+                "signals": [
+                    {
+                        "signal_id": DOSSIER,
+                        "point_density_ratio_to_assumed_prior_center": 42.04,
+                        "optimizer_starts": 4,
+                        "optimizer_successes": 4,
+                    }
+                ],
+            }
+        )
+    )
+    (src / "reviews" / "point-replay.json").write_text(
+        json.dumps(
+            {"signals": [{"signal_id": DOSSIER, "status": "replay_passed", "fixed_vectors": 10}]}
+        )
+    )
+    (src / "reviews" / "novel.json").write_text(
+        json.dumps({"reviewed_utc": "2026-10-12", "signals": [{"signal_id": DOSSIER, "x": 1}]})
+    )
+
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
         tar.add(src, arcname="exoplanet-candidates-abc")
@@ -230,6 +255,13 @@ async def test_streamed_archive_hashes_everything_and_keeps_only_json(factory, t
     sig, rep = await _signal(factory)
     review = rep.raw_payload["_vetting"]["physical_fit_review"]
     assert review["radius_ratio"] == 0.187 and review["density_tension_prior_widths"] == 16.2
+    point = rep.raw_payload["_vetting"]["point_fit_review"]
+    assert point["density_ratio_to_catalogue"] == 42.04 and point["replay"] == "replay_passed"
+    assert rep.raw_payload["_vetting"]["other_reviews"] == ["reviews/novel.json"]
+    assert any(
+        "4/4 optimizer starts converged; fresh-environment replay passed" in line
+        for line in sig.scientific_limits
+    )
     assert any("in tension with a planet" in line for line in sig.scientific_limits)
 
 

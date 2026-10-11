@@ -49,25 +49,44 @@ def _load(path: Path) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
-def load_reviews(repo_dir: Path) -> dict[str, dict[str, Any]]:
-    """Latest supplementary physical-fit review per signal id (reviews/*.json)."""
-    out: dict[str, dict[str, Any]] = {}
+def _review_kind(entry: dict[str, Any]) -> str:
+    if "conditional_median_log_density_difference_in_declared_prior_widths" in entry:
+        return "physical_fit_review"  # sampled conditional chains
+    if "point_density_ratio_to_assumed_prior_center" in entry:
+        return "point_fit_review"  # bounded point refits (exposure-integration review)
+    if "fixed_vectors" in entry or str(entry.get("status", "")).startswith("replay"):
+        return "replay"
+    return "other_review"
+
+
+def load_reviews(repo_dir: Path) -> dict[str, dict[str, dict[str, Any]]]:
+    """Supplementary reviews (reviews/*.json) per signal id, latest per kind.
+
+    Kinds: physical_fit_review (sampled chains), point_fit_review (point refits), replay
+    (a fresh-environment replay certificate) and other_review (any shape not yet known,
+    kept by file name so a new kind of review is never silently dropped).
+    """
+    out: dict[str, dict[str, dict[str, Any]]] = {}
     reviews = repo_dir / "reviews"
     if not reviews.is_dir():
         return out
     for path in sorted(reviews.glob("*.json")):
         data = _load(path) or {}
         for entry in data.get("signals") or []:
-            sid = entry.get("signal_id")
+            sid = entry.get("signal_id") if isinstance(entry, dict) else None
             if not sid:
                 continue
-            current = out.get(sid)
-            if current is None or str(data.get("reviewed_utc")) >= str(current["reviewed_utc"]):
-                out[sid] = {
-                    "file": f"reviews/{path.name}",
-                    "reviewed_utc": data.get("reviewed_utc"),
-                    "entry": entry,
-                }
+            kind = _review_kind(entry)
+            review = {
+                "file": f"reviews/{path.name}",
+                "reviewed_utc": data.get("reviewed_utc"),
+                "entry": entry,
+            }
+            current = out.setdefault(sid, {}).get(kind)
+            if current is None or str(review["reviewed_utc"] or "") >= str(
+                current["reviewed_utc"] or ""
+            ):
+                out[sid][kind] = review
     return out
 
 
@@ -76,7 +95,7 @@ def _median(q: dict[str, Any], key: str) -> float | None:
     return v[1] if isinstance(v, list) and len(v) == 3 else None
 
 
-def _review_summary(review: dict[str, Any]) -> dict[str, Any]:
+def _physical_fit(review: dict[str, Any]) -> dict[str, Any]:
     e = review["entry"]
     q = e.get("conditional_draw_quantiles_16_50_84") or {}
     bounds = e.get("prior_boundary_draw_fractions") or {}
@@ -96,6 +115,37 @@ def _review_summary(review: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _point_fit(review: dict[str, Any], replay: dict[str, Any] | None) -> dict[str, Any]:
+    e = review["entry"]
+    return {
+        "file": review["file"],
+        "reviewed_utc": review["reviewed_utc"],
+        "density_ratio_to_catalogue": e.get("point_density_ratio_to_assumed_prior_center"),
+        "optimizer_successes": e.get("optimizer_successes"),
+        "optimizer_starts": e.get("optimizer_starts"),
+        "numerically_stable": e.get("all_reviewed_vectors_within_numerical_triggers"),
+        "physical_model_qualified": e.get("physical_model_qualified"),
+        "replay": (replay or {}).get("entry", {}).get("status"),
+        "replay_file": (replay or {}).get("file"),
+    }
+
+
+def _reviews_summary(reviews: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    if "physical_fit_review" in reviews:
+        out["physical_fit_review"] = _physical_fit(reviews["physical_fit_review"])
+    if "point_fit_review" in reviews:
+        out["point_fit_review"] = _point_fit(reviews["point_fit_review"], reviews.get("replay"))
+    elif "replay" in reviews:
+        out["replay"] = {
+            "file": reviews["replay"]["file"],
+            "status": reviews["replay"]["entry"].get("status"),
+        }
+    if "other_review" in reviews:
+        out["other_reviews"] = [reviews["other_review"]["file"]]
+    return out
+
+
 def _offsets(findings: dict[str, Any]) -> list[float] | None:
     values = [
         o["target_offset_pixels"]
@@ -112,10 +162,10 @@ def summarise(
     vetting: dict[str, Any] | None,
     findings: dict[str, Any] | None,
     external: dict[str, Any] | None,
-    review: dict[str, Any] | None,
+    reviews: dict[str, dict[str, Any]] | None,
 ) -> dict[str, Any] | None:
     """One compact, JSON-ready view of every vetting file published for a dossier."""
-    if not (vetting or findings or external or review):
+    if not (vetting or findings or external or reviews):
         return None
     vetting = vetting or {}
     findings = findings or {}
@@ -183,13 +233,12 @@ def summarise(
             "NFPP": rep.get("NFPP") or None,
             "centres_agree": external.get("nominal_centres_agree"),
         }
-    if review:
-        out["physical_fit_review"] = _review_summary(review)
+    out.update(_reviews_summary(reviews or {}))
     return out
 
 
 def read_dossier(
-    dossier_dir: Path, review: dict[str, Any] | None, sealed: set[str]
+    dossier_dir: Path, reviews: dict[str, dict[str, Any]] | None, sealed: set[str]
 ) -> dict[str, Any] | None:
     """Summary of the vetting files in a dossier; only files its evidence manifest seals count."""
 
@@ -200,7 +249,7 @@ def read_dossier(
         sealed_file("vetting.json"),
         sealed_file("evidence/vetting-findings.json"),
         sealed_file("evidence/external-report.json"),
-        review,
+        reviews,
     )
 
 
@@ -251,6 +300,17 @@ def limit_lines(summary: dict[str, Any] | None) -> list[str]:
             f"{head} physical-fit review: fitted stellar density {ratio:.3g}× the catalogue "
             f"star's ({widths:.1f} prior widths)"
             + (tension if widths > DENSITY_TENSION_WIDTHS else "")
+        )
+    point = summary.get("point_fit_review") or {}
+    if isinstance(point.get("density_ratio_to_catalogue"), int | float):
+        replay = {"replay_passed": "; fresh-environment replay passed"}.get(
+            point.get("replay") or "", f"; replay {point['replay']}" if point.get("replay") else ""
+        )
+        lines.append(
+            f"{head} point-fit review: stellar density "
+            f"{point['density_ratio_to_catalogue']:.3g}\u00d7 the catalogue star's at the point "
+            f"fit ({point.get('optimizer_successes')}/{point.get('optimizer_starts')} optimizer "
+            f"starts converged{replay})"
         )
     return lines
 

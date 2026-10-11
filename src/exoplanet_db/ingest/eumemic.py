@@ -320,6 +320,8 @@ def tier_verdict(tier: str, reason: str | None = None) -> tuple[str, str]:
     )
     reason = (reason or "").strip()
     return disposition, f"{verdict} ({reason})" if reason else verdict
+
+
 EUMEMIC_REPO = "eumemic/exoplanets"
 ALLSKY_FILE = "results_public/candidates_allsky.csv"
 EARLIER_TIERS_FILE = "results_public/tiers_earlier_candidates.csv"
@@ -451,7 +453,15 @@ def parse_vetting_rows(csv_text: str, stem: str) -> list[dict[str, Any]]:
                     "n_fail": len(fails),
                     **{
                         k: r.get(k)
-                        for k in ("rank", "MES", "snr", "rp", "method", "known_status", "known_detail")
+                        for k in (
+                            "rank",
+                            "MES",
+                            "snr",
+                            "rp",
+                            "method",
+                            "known_status",
+                            "known_detail",
+                        )
                     },
                 },
             }

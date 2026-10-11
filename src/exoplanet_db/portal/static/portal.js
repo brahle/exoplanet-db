@@ -175,6 +175,8 @@ function renderVetting(v) {
   if (ext) facts.push(`External report (${escapeHtml(ext.source_file || '—')}): tier ${escapeHtml(ext.tier || '—')}${ext.reason ? `, ${escapeHtml(ext.reason)}` : ''}${ext.FPP ? `, FPP ${escapeHtml(ext.FPP)}` : ''}`);
   const fit = v.physical_fit_review;
   if (fit) facts.push(`Physical-fit review (${escapeHtml((fit.reviewed_utc || '').slice(0, 10))}): ${escapeHtml((fit.sampling || '').replace(/_/g, ' '))}; Rp/R★ ${num(fit.radius_ratio, 3)}, b ${num(fit.impact_parameter, 2)}, stellar density ${num(fit.density_ratio_to_catalogue, 2)}× catalogue (${num(fit.density_tension_prior_widths, 1)} prior widths)`);
+  const pt = v.point_fit_review;
+  if (pt) facts.push(`Point-fit review (${escapeHtml((pt.reviewed_utc || '').slice(0, 10))}): stellar density ${num(pt.density_ratio_to_catalogue, 2)}× catalogue at the point fit; ${pt.optimizer_successes}/${pt.optimizer_starts} optimizer starts converged${pt.replay ? `; replay ${escapeHtml(pt.replay.replace(/_/g, ' '))}` : ''}`);
   return `
     <section class="detail-section detail-card">
       <h4 class="detail-section-title">Vetting (exoplanet-candidates${v.assessed_utc ? `, ${escapeHtml(v.assessed_utc.slice(0, 10))}` : ''})</h4>

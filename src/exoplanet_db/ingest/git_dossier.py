@@ -66,12 +66,12 @@ class GitDossierIngest:
         self,
         session: AsyncSession,
         known_hashes: dict[str, str] | None = None,
-        reviews: dict[str, dict[str, Any]] | None = None,
+        reviews: dict[str, dict[str, dict[str, Any]]] | None = None,
     ):
         self.session = session
         # Repo-relative path -> sha256, for files hashed while streaming and never written out
         self.known_hashes = known_hashes
-        # Supplementary physical-fit reviews by dossier id (reviews/*.json)
+        # Supplementary reviews by dossier id and kind (reviews/*.json)
         self.reviews = reviews or {}
 
     def verify_evidence_manifest(self, dossier_dir: Path) -> dict[str, str]:
