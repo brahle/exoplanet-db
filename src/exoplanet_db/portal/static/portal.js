@@ -758,12 +758,17 @@ async function initObservationQueue() {
     });
   }
 
+  // datetime-local inputs hold local wall-clock time, not UTC
+  const toLocalInput = (d) => {
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
   const now = new Date();
-  const nextWeek = new Date(now.getTime() + 7 * 24 * 3600 * 1000);
+  const tomorrow = new Date(now.getTime() + 24 * 3600 * 1000);
   const startInput = document.getElementById('obs-start');
   const endInput = document.getElementById('obs-end');
-  if (startInput) startInput.value = now.toISOString().slice(0, 16);
-  if (endInput) endInput.value = nextWeek.toISOString().slice(0, 16);
+  if (startInput) startInput.value = toLocalInput(now);
+  if (endInput) endInput.value = toLocalInput(tomorrow);
 
   if (form) {
     form.addEventListener('submit', async (e) => {
@@ -777,92 +782,97 @@ async function calculateObservationQueue() {
   const container = document.getElementById('queue-results-container');
   if (!container) return;
 
-  const lat = document.getElementById('obs-lat').value;
-  const lon = document.getElementById('obs-lon').value;
-  const startVal = document.getElementById('obs-start').value;
-  const endVal = document.getElementById('obs-end').value;
-  const minPriority = document.getElementById('obs-min-priority').value || '0.0';
-
+  const val = (id, fallback) => (document.getElementById(id)?.value || fallback);
+  const startVal = val('obs-start');
+  const endVal = val('obs-end');
   if (!startVal || !endVal) return;
 
-  container.innerHTML = '<div style="color: var(--text-muted); text-align: center; padding: 2rem;">Computing topocentric ephemerides and transit visibility...</div>';
+  const previous = container.querySelector('.queue-table-wrap');
+  if (previous) previous.style.opacity = '0.5';
+  else container.innerHTML = '<div class="queue-message">Computing transit windows for every catalogued signal…</div>';
+
+  const params = new URLSearchParams({
+    lat: val('obs-lat'),
+    lon: val('obs-lon'),
+    start_time: new Date(startVal).toISOString(),
+    end_time: new Date(endVal).toISOString(),
+    min_priority: val('obs-min-priority', '0'),
+    min_altitude_deg: val('obs-min-alt', '30'),
+    max_sun_altitude_deg: val('obs-twilight', '-12'),
+    max_timing_uncertainty_min: val('obs-max-sigma', '120'),
+    limit: '100',
+  });
 
   try {
-    const startIso = new Date(startVal).toISOString();
-    const endIso = new Date(endVal).toISOString();
-
-    const params = new URLSearchParams({
-      lat: lat,
-      lon: lon,
-      start_time: startIso,
-      end_time: endIso,
-      min_priority: minPriority,
-      limit: '50'
-    });
-
     const res = await fetch(`/v1/observations/queue?${params.toString()}`);
-    if (!res.ok) throw new Error(`HTTP error ${res.status}`);
-    const data = await res.json();
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const detail = Array.isArray(data.detail) ? data.detail.map((d) => d.msg).join('; ') : data.detail;
+      throw new Error(detail || `HTTP ${res.status}`);
+    }
 
     if (data.items.length === 0) {
-      container.innerHTML = '<div style="color: var(--text-muted); text-align: center; padding: 2rem;">No observable transit windows found for the selected window and coordinates.</div>';
+      container.innerHTML = '<div class="queue-message">No transit is fully observable from this site in the window with these limits. Try a longer window, nautical or civil darkness, or a lower altitude limit.</div>';
       return;
     }
 
+    const fmtTime = (iso) => {
+      const d = new Date(iso);
+      return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    };
+    const fmtUtc = (iso) => iso.slice(11, 16);
+
     container.innerHTML = `
+      <p class="queue-summary">${data.total.toLocaleString()} fully observable transit${data.total === 1 ? '' : 's'}${data.total > data.items.length ? `, best ${data.items.length} shown` : ''}. Times in your local time zone (UTC in grey).</p>
       <div class="queue-table-wrap">
-        <table class="data-table">
+        <table class="data-table queue-table">
           <thead>
             <tr>
               <th>Priority</th>
-              <th>Target & Signal</th>
-              <th>Mid-Transit (UTC)</th>
+              <th>Signal</th>
+              <th>Mid-transit</th>
+              <th>Observe from → to</th>
               <th>Duration</th>
-              <th>Timing Unc.</th>
-              <th>Altitude / Airmass</th>
-              <th>Status</th>
+              <th>Timing ±1σ</th>
+              <th>Altitude start / mid / end</th>
+              <th>Sun / Moon</th>
             </tr>
           </thead>
           <tbody>
-            ${data.items.map(item => `
+            ${data.items.map((item) => `
               <tr>
                 <td><span class="score-badge">${item.priority_score.toFixed(2)}</span></td>
                 <td>
-                  <a href="#candidate/${encodeURIComponent(item.signal_id)}" class="queue-link">
-                    <strong>${escapeHtml(item.target_name)}</strong><br>
-                    <small style="color: var(--text-muted);">${escapeHtml(item.signal_name)}</small>
-                  </a>
+                  <a href="#candidate/${encodeURIComponent(item.signal_id)}" class="queue-link" data-id="${escapeHtml(item.signal_id)}">
+                    <strong>${escapeHtml(item.signal_name)}</strong>
+                  </a><br>
+                  <small class="queue-sub">${escapeHtml(item.target_name)} · ${escapeHtml(item.current_disposition.replace(/_/g, ' '))}</small>
                 </td>
-                <td>
-                  <span style="font-family: var(--font-mono);">${new Date(item.transit_mid_utc).toUTCString()}</span>
-                </td>
-                <td>${item.duration_h.toFixed(2)} h</td>
+                <td class="mono">${fmtTime(item.transit_mid_utc)}<br><small class="queue-sub">${fmtUtc(item.transit_mid_utc)} UTC</small></td>
+                <td class="mono">${fmtTime(item.window_start_utc)}<br>→ ${fmtTime(item.window_end_utc)}</td>
+                <td>${item.duration_h.toFixed(2)} h${item.duration_assumed ? ' <small class="queue-sub" title="No published duration; 2.5 h assumed">(assumed)</small>' : ''}</td>
                 <td>±${item.timing_uncertainty_min.toFixed(1)} min</td>
-                <td>${item.target_altitude_deg.toFixed(1)}° (z=${item.target_airmass.toFixed(2)})</td>
-                <td>
-                  ${item.is_observable ? '<span style="color: var(--accent-emerald);">● Observable</span>' : '<span style="color: var(--accent-rose);">○ Daylight/Moon</span>'}
-                </td>
+                <td>${item.altitude_ingress_deg.toFixed(0)}° / ${item.target_altitude_deg.toFixed(0)}° / ${item.altitude_egress_deg.toFixed(0)}°<br><small class="queue-sub">airmass ${item.target_airmass.toFixed(2)} at mid</small></td>
+                <td>${item.sun_altitude_deg.toFixed(0)}° / ${item.moon_separation_deg.toFixed(0)}°<br><small class="queue-sub">highest Sun · Moon distance</small></td>
               </tr>
             `).join('')}
           </tbody>
         </table>
       </div>
+      <p class="queue-sub queue-note">"Observe from → to" is the transit padded by its timing uncertainty; the whole span is above the altitude limit, in darkness and at least 30° from the Moon. One row per signal and transit, using its most precise published ephemeris.</p>
     `;
 
-    // Attach click listeners to queue candidate links with modifier key support
-    container.querySelectorAll('.queue-link').forEach(link => {
+    container.querySelectorAll('.queue-link').forEach((link) => {
       link.addEventListener('click', (e) => {
         if (e.metaKey || e.ctrlKey || e.shiftKey || e.button === 1) return;
         e.preventDefault();
-        const href = link.getAttribute('href');
-        if (href) {
-          history.pushState(null, '', href);
-          handleRoute();
-        }
+        const id = link.getAttribute('data-id');
+        history.pushState(null, '', `#candidate/${id}`);
+        openDossierModal(id);
       });
     });
   } catch (err) {
-    container.innerHTML = `<div style="color: var(--accent-rose); text-align: center; padding: 2rem;">Error computing observation queue: ${escapeHtml(err.message)}</div>`;
+    container.innerHTML = `<div class="queue-message queue-error">Could not compute the queue: ${escapeHtml(err.message)}</div>`;
   }
 }
 

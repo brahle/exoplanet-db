@@ -6,7 +6,7 @@ import json
 import os
 import time
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -293,10 +293,22 @@ class ObservationQueueItem(BaseModel):
     priority_score: float
     target_altitude_deg: float
     target_airmass: float
-    sun_altitude_deg: float
+    sun_altitude_deg: float = Field(description="Highest Sun altitude between ingress and egress")
     moon_separation_deg: float
-    is_observable: bool
+    is_observable: bool = Field(
+        description="Whole transit (ingress to egress) above the altitude limit, in darkness, clear of the Moon"
+    )
     fit_model: str | None = None
+    cycle_number: int | None = None
+    bjd_mid_tdb: float | None = None
+    window_start_utc: datetime | None = Field(
+        None, description="Ingress minus 1-sigma timing error"
+    )
+    window_end_utc: datetime | None = Field(None, description="Egress plus 1-sigma timing error")
+    altitude_ingress_deg: float | None = Field(None, description="Target altitude at window start")
+    altitude_egress_deg: float | None = Field(None, description="Target altitude at window end")
+    duration_assumed: bool = Field(False, description="No published duration; 2.5 h assumed")
+    depth_ppm: float | None = None
 
 
 class ObservationQueueResponse(BaseModel):
@@ -685,21 +697,53 @@ async def get_observation_queue(
     start_time: datetime = Query(..., description="Observation window start in UTC (ISO-8601)"),
     end_time: datetime = Query(..., description="Observation window end in UTC (ISO-8601)"),
     min_priority: float = Query(0.0, ge=0.0, description="Minimum priority score cutoff"),
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(50, ge=1, le=500),
+    min_altitude_deg: float = Query(30.0, ge=0.0, le=89.0),
+    max_sun_altitude_deg: float = Query(
+        -18.0, ge=-90.0, le=0.0, description="-18 astronomical, -12 nautical, -6 civil twilight"
+    ),
+    min_moon_separation_deg: float = Query(30.0, ge=0.0, le=180.0),
+    max_timing_uncertainty_min: float = Query(
+        120.0, gt=0.0, le=1440.0, description="Transits predicted less precisely are not observable"
+    ),
+    observable_only: bool = Query(True, description="Drop transits that fail any constraint"),
+    elevation_m: float = Query(0.0, ge=-500.0, le=9000.0),
     session: AsyncSession = Depends(get_session),
 ):
+    """Transits fully observable from one site in the window (at most 7 days), best first.
+
+    One row per signal and transit, using the signal's most precise ephemeris.
+    """
+    from exoplanet_db.services.observation_queue import MAX_WINDOW_DAYS
+
+    if start_time.tzinfo is None:
+        start_time = start_time.replace(tzinfo=UTC)
+    if end_time.tzinfo is None:
+        end_time = end_time.replace(tzinfo=UTC)
+    span_days = (end_time - start_time).total_seconds() / 86400.0
+    if span_days <= 0 or span_days > MAX_WINDOW_DAYS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"end_time must be after start_time and within {MAX_WINDOW_DAYS:g} days of it",
+        )
     service = CatalogService(session)
-    items = await service.get_observation_queue(
+    result = await service.get_observation_queue(
         lat_deg=lat,
         lon_deg=lon,
         start_time=start_time,
         end_time=end_time,
         min_priority=min_priority,
         limit=limit,
+        min_altitude_deg=min_altitude_deg,
+        max_sun_altitude_deg=max_sun_altitude_deg,
+        min_moon_separation_deg=min_moon_separation_deg,
+        max_timing_uncertainty_min=max_timing_uncertainty_min,
+        observable_only=observable_only,
+        height_m=elevation_m,
     )
     return ObservationQueueResponse(
-        items=[ObservationQueueItem(**item) for item in items],
-        total=len(items),
-        observer={"lat": lat, "lon": lon},
+        items=[ObservationQueueItem(**item) for item in result["items"]],
+        total=result["total"],
+        observer={"lat": lat, "lon": lon, "elevation_m": elevation_m},
         window={"start": start_time.isoformat(), "end": end_time.isoformat()},
     )

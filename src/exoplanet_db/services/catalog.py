@@ -15,11 +15,6 @@ from exoplanet_db.models import (
     Signal,
     Target,
 )
-from exoplanet_db.services.ephemeris import find_upcoming_transits
-from exoplanet_db.services.observability import (
-    calculate_observability,
-    compute_priority_score,
-)
 from exoplanet_db.services.system_physics import (
     planet_radius_earth,
     semi_major_axis_au,
@@ -343,85 +338,115 @@ class CatalogService:
         end_time: datetime,
         min_priority: float = 0.0,
         limit: int = 50,
-    ) -> list[dict[str, Any]]:
-        query = (
-            select(EphemerisFit)
-            .where(EphemerisFit.is_coherent.is_(True))
-            .options(selectinload(EphemerisFit.signal).selectinload(Signal.target))
+        *,
+        min_altitude_deg: float = 30.0,
+        max_sun_altitude_deg: float = -18.0,
+        min_moon_separation_deg: float = 30.0,
+        max_timing_uncertainty_min: float = 120.0,
+        observable_only: bool = True,
+        height_m: float = 0.0,
+    ) -> dict[str, Any]:
+        """Observable transits in [start_time, end_time] for one site: {"items", "total"}."""
+        import asyncio
+
+        from exoplanet_db.services.observation_queue import QueueSettings, compute_queue
+
+        # Stars that never rise above the limit at this latitude are skipped in SQL
+        max_alt_cond = (90.0 - func.abs(lat_deg - Target.dec_deg)) >= min_altitude_deg
+        rows = (
+            await self.session.execute(
+                select(
+                    EphemerisFit.period_d,
+                    EphemerisFit.period_err_d,
+                    EphemerisFit.epoch_bjd_tdb,
+                    EphemerisFit.epoch_err_d,
+                    EphemerisFit.covariance_matrix,
+                    EphemerisFit.duration_h,
+                    EphemerisFit.depth_ppm,
+                    EphemerisFit.fit_model,
+                    Signal.id,
+                    Signal.display_name,
+                    Signal.current_disposition,
+                    Signal.primary_duration_h,
+                    Signal.primary_depth_ppm,
+                    Target.id,
+                    Target.primary_name,
+                    Target.ra_deg,
+                    Target.dec_deg,
+                )
+                .join(Signal, Signal.id == EphemerisFit.signal_id)
+                .join(Target, Target.id == Signal.target_id)
+                .where(
+                    EphemerisFit.is_coherent.is_(True),
+                    EphemerisFit.period_d > 0,
+                    EphemerisFit.epoch_bjd_tdb > 2400000,
+                    Signal.current_disposition != "false_positive",
+                    ~((Target.ra_deg == 0.0) & (Target.dec_deg == 0.0)),
+                    max_alt_cond,
+                )
+            )
+        ).all()
+
+        def covariance(mat: Any) -> float | None:
+            if mat and len(mat) >= 2 and len(mat[0]) >= 2:
+                return mat[0][1]
+            return None
+
+        records = [
+            {
+                "period_d": p,
+                "period_err_d": pe,
+                "epoch_bjd": e,
+                "epoch_err_d": ee,
+                "cov": covariance(cm),
+                "duration_h": dur or sdur,
+                "depth_ppm": dep or sdep,
+                "fit_model": fm,
+                "signal_id": sid,
+                "signal_name": sname,
+                "disposition": disp,
+                "target_id": tid,
+                "target_name": tname,
+                "ra_deg": ra,
+                "dec_deg": dec,
+            }
+            for (
+                p,
+                pe,
+                e,
+                ee,
+                cm,
+                dur,
+                dep,
+                fm,
+                sid,
+                sname,
+                disp,
+                sdur,
+                sdep,
+                tid,
+                tname,
+                ra,
+                dec,
+            ) in rows
+        ]
+        settings = QueueSettings(
+            lat_deg=lat_deg,
+            lon_deg=lon_deg,
+            start_utc=start_time,
+            end_utc=end_time,
+            height_m=height_m,
+            min_altitude_deg=min_altitude_deg,
+            max_sun_altitude_deg=max_sun_altitude_deg,
+            min_moon_separation_deg=min_moon_separation_deg,
+            max_timing_uncertainty_min=max_timing_uncertainty_min,
+            min_priority=min_priority,
+            observable_only=observable_only,
+            limit=limit,
         )
-        res = await self.session.execute(query)
-        fits = list(res.scalars().all())
-
-        queue_entries: list[dict[str, Any]] = []
-
-        for fit in fits:
-            signal = fit.signal
-            if not signal or not signal.target:
-                continue
-            target = signal.target
-            if target.ra_deg is None or target.dec_deg is None:
-                continue
-
-            # Fast geometric pre-filter: maximum meridian altitude is 90 - |lat - dec|
-            if (90.0 - abs(lat_deg - target.dec_deg)) < 15.0:
-                continue
-
-            try:
-                transits = find_upcoming_transits(
-                    fit=fit,
-                    ra_deg=target.ra_deg,
-                    dec_deg=target.dec_deg,
-                    start_utc=start_time,
-                    end_utc=end_time,
-                    observer_lat_deg=lat_deg,
-                    observer_lon_deg=lon_deg,
-                )
-            except Exception:
-                continue
-
-            for t in transits:
-                obs = calculate_observability(
-                    ra_deg=target.ra_deg,
-                    dec_deg=target.dec_deg,
-                    time_utc=t["utc_mid"],
-                    lat_deg=lat_deg,
-                    lon_deg=lon_deg,
-                )
-
-                score = compute_priority_score(
-                    disposition=signal.current_disposition,
-                    timing_uncertainty_min=t["timing_uncertainty_min"],
-                    depth_ppm=signal.primary_depth_ppm or 1000.0,
-                    duration_h=t["duration_h"],
-                    is_observable=obs["is_observable"],
-                    is_coherent=True,
-                )
-
-                if score >= min_priority:
-                    queue_entries.append(
-                        {
-                            "signal_id": signal.id,
-                            "target_id": target.id,
-                            "target_name": target.primary_name,
-                            "signal_name": signal.display_name,
-                            "current_disposition": signal.current_disposition,
-                            "transit_mid_utc": t["utc_mid"],
-                            "transit_start_utc": t["transit_start_utc"],
-                            "transit_end_utc": t["transit_end_utc"],
-                            "duration_h": t["duration_h"],
-                            "timing_uncertainty_min": round(t["timing_uncertainty_min"], 2),
-                            "priority_score": score,
-                            "target_altitude_deg": obs["target_altitude_deg"],
-                            "target_airmass": obs["target_airmass"],
-                            "sun_altitude_deg": obs["sun_altitude_deg"],
-                            "moon_separation_deg": obs["moon_separation_deg"],
-                            "is_observable": obs["is_observable"],
-                            "fit_model": t.get("solution_name"),
-                        }
-                    )
-
-        queue_entries.sort(key=lambda x: (-x["priority_score"], x["transit_mid_utc"]))
-        return queue_entries[:limit]
+        # CPU-bound astropy/numpy work: keep the event loop (and /healthz) responsive
+        items, total = await asyncio.to_thread(compute_queue, records, settings)
+        return {"items": items, "total": total}
 
     async def get_source_status(self) -> list[dict[str, Any]]:
         """Current coverage of each source: one entry per source, not per ingest run.

@@ -86,8 +86,9 @@ async def test_observation_queue_api(test_session: AsyncSession):
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        start_time = datetime(2026, 12, 20, 0, 0, tzinfo=UTC)
-        end_time = start_time + timedelta(days=5)
+        # WASP-12 b has fully observable transits from Zagreb on 4-6 Dec 2026
+        start_time = datetime(2026, 12, 1, 0, 0, tzinfo=UTC)
+        end_time = start_time + timedelta(days=7)
 
         response = await client.get(
             "/v1/observations/queue",
@@ -115,5 +116,35 @@ async def test_observation_queue_api(test_session: AsyncSession):
         assert top_item["current_disposition"] == "confirmed_planet"
         assert "timing_uncertainty_min" in top_item
         assert "priority_score" in top_item
+        # The whole transit, not just mid-transit, must clear the altitude limit in darkness
+        for item in data["items"]:
+            assert item["is_observable"] is True
+            assert min(item["altitude_ingress_deg"], item["altitude_egress_deg"]) >= 30.0
+            assert item["sun_altitude_deg"] <= -18.0
+
+        # Unobservable transits are only listed on request, flagged
+        everything = await client.get(
+            "/v1/observations/queue",
+            params={
+                "lat": 45.8150,
+                "lon": 15.9819,
+                "start_time": datetime(2026, 12, 20, tzinfo=UTC).isoformat(),
+                "end_time": datetime(2026, 12, 25, tzinfo=UTC).isoformat(),
+                "observable_only": "false",
+            },
+        )
+        rows = everything.json()["items"]
+        assert len(rows) == 5 and not any(r["is_observable"] for r in rows)
+
+        too_long = await client.get(
+            "/v1/observations/queue",
+            params={
+                "lat": 45.8,
+                "lon": 16.0,
+                "start_time": start_time.isoformat(),
+                "end_time": (start_time + timedelta(days=8)).isoformat(),
+            },
+        )
+        assert too_long.status_code == 422
 
     app.dependency_overrides.clear()

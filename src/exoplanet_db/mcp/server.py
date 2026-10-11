@@ -466,17 +466,20 @@ async def get_observation_queue(
     if AsyncSessionLocal is not None:
         async with AsyncSessionLocal() as session:
             service = CatalogService(session)
-            items = await service.get_observation_queue(
+            result = await service.get_observation_queue(
                 lat_deg=lat,
                 lon_deg=lon,
-                start_time=datetime.fromisoformat(start_time_iso),
-                end_time=datetime.fromisoformat(end_time_iso),
+                start_time=datetime.fromisoformat(start_time_iso.replace("Z", "+00:00")),
+                end_time=datetime.fromisoformat(end_time_iso.replace("Z", "+00:00")),
                 min_priority=min_priority,
                 limit=limit,
             )
-            return {"total": len(items), "items": items}
+            for it in result["items"]:
+                for key in ("transit_mid_utc", "transit_start_utc", "transit_end_utc"):
+                    it[key] = it[key].isoformat()
+            return result
 
-    async with httpx.AsyncClient(base_url=EXOPLANET_API_URL, timeout=15.0) as client:
+    async with httpx.AsyncClient(base_url=EXOPLANET_API_URL, timeout=90.0) as client:
         resp = await client.get(
             "/v1/observations/queue",
             params={

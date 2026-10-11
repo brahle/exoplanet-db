@@ -1390,3 +1390,41 @@ a.source-link:hover,
     width: 110px;
   }
 }
+
+/* ---------- Observation queue ---------- */
+.queue-message {
+  color: var(--text-muted);
+  text-align: center;
+  padding: 2rem;
+}
+
+.queue-error {
+  color: var(--accent-rose);
+}
+
+.queue-summary {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  margin: 1rem 0 0.5rem;
+}
+
+.queue-sub {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+.queue-note {
+  margin-top: 0.75rem;
+  line-height: 1.5;
+}
+
+.queue-table td.mono {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  white-space: nowrap;
+}
+
+.queue-table-wrap {
+  overflow-x: auto;
+  transition: opacity 0.15s;
+}
