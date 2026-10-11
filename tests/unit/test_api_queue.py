@@ -136,6 +136,30 @@ async def test_observation_queue_api(test_session: AsyncSession):
         rows = everything.json()["items"]
         assert len(rows) == 5 and not any(r["is_observable"] for r in rows)
 
+        wrong_source = await client.get(
+            "/v1/observations/queue",
+            params={
+                "lat": 45.8150,
+                "lon": 15.9819,
+                "start_time": start_time.isoformat(),
+                "end_time": end_time.isoformat(),
+                "source": "exofop_ctoi",
+            },
+        )
+        assert wrong_source.json()["total"] == 0
+        right_source = await client.get(
+            "/v1/observations/queue",
+            params={
+                "lat": 45.8150,
+                "lon": 15.9819,
+                "start_time": start_time.isoformat(),
+                "end_time": end_time.isoformat(),
+                "source": "literature",
+            },
+        )
+        assert right_source.json()["total"] >= 1
+        assert right_source.json()["items"][0]["source_names"] == ["literature"]
+
         too_long = await client.get(
             "/v1/observations/queue",
             params={

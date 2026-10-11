@@ -93,6 +93,10 @@ class Signal(Base):
     )
     scientific_limits: Mapped[list[str]] = mapped_column(JSONType, default=list, nullable=False)
 
+    # Heuristic 0-100 "how likely a real planet" score and its factors (services/planet_score.py)
+    planet_score: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    score_factors: Mapped[list[dict] | None] = mapped_column(JSONType, nullable=True)
+
     # Preferred coherent fit pointer (for scheduling)
     preferred_ephemeris_fit_id: Mapped[str | None] = mapped_column(
         String(36),

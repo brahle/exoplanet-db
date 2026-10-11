@@ -1,0 +1,241 @@
+"""Planet score: a 0-100 at-a-glance indication of how likely a signal is a real planet.
+
+Heuristic, not a calibrated probability. It starts from the strongest classification any
+source gives the signal and adjusts for independent support and red flags. Every step is
+stored as a factor so the number can always be explained.
+"""
+
+from __future__ import annotations
+
+import math
+from collections import defaultdict
+from dataclasses import dataclass, field
+from typing import Any
+
+from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from exoplanet_db.models import Report, Signal, Target
+
+R_SUN_IN_R_EARTH = 109.076
+
+EUMEMIC_TIER_BASE = {"A": 55, "B": 45, "N": 35, "L1": 30}
+
+
+@dataclass
+class Evidence:
+    disposition: str
+    sources: set[str] = field(default_factory=set)
+    toi_dispositions: set[str] = field(default_factory=set)  # TFOPWG codes: PC, APC, CP, KP, FP, FA
+    eumemic_tiers: set[str] = field(default_factory=set)
+    eumemic_fpp: float | None = None
+    ctoi_dispositions: set[str] = field(default_factory=set)
+    localisation: str = "unresolved"
+    timing: str = "unresolved"
+    depth_ppm: float | None = None
+    star_radius_rsun: float | None = None
+    published_radius_earth: float | None = None
+    other_candidates_on_star: int = 0
+
+
+def _factor(label: str, delta: int) -> dict[str, Any]:
+    return {"label": label, "delta": delta}
+
+
+def score(e: Evidence) -> tuple[int, list[dict[str, Any]]]:
+    factors: list[dict[str, Any]] = []
+
+    # 1. Base: the strongest classification
+    if "nasa_pscomppars" in e.sources or (
+        e.disposition == "confirmed_planet" and not e.toi_dispositions
+    ):
+        return 100, [_factor("Confirmed planet in the NASA Exoplanet Archive", 100)]
+    if e.toi_dispositions & {"CP", "KP"}:
+        return 95, [_factor("TFOPWG lists it as a confirmed or known planet", 95)]
+    if e.disposition == "false_positive" or e.toi_dispositions & {"FP", "FA"}:
+        return 0, [_factor("Classified as a false positive or false alarm", 0)]
+
+    if e.toi_dispositions & {"PC"}:
+        base, label = 60, "TESS Object of Interest, TFOPWG planet candidate"
+    elif e.toi_dispositions & {"APC"}:
+        base, label = 45, "TESS Object of Interest, ambiguous planet candidate"
+    elif e.eumemic_tiers:
+        tier = min(e.eumemic_tiers, key=lambda t: -EUMEMIC_TIER_BASE.get(t, 0))
+        base, label = EUMEMIC_TIER_BASE.get(tier, 30), f"eumemic/exoplanets tier {tier} candidate"
+    elif e.ctoi_dispositions:
+        base, label = 40, "ExoFOP community TOI"
+    elif any(s.startswith("git:") for s in e.sources):
+        base, label = 20, "Provisional transit-like signal (unvetted dossier)"
+    else:
+        base, label = 30, "Catalogued candidate"
+    factors.append(_factor(label, base))
+    total = base
+
+    # 2. Independent support
+    independent = len(
+        {s for s in e.sources if not s.startswith("git:")}
+        | ({"git"} if any(s.startswith("git:") for s in e.sources) else set())
+    )
+    if independent > 1:
+        bonus = min(10, 5 * (independent - 1))
+        factors.append(_factor(f"Reported by {independent} independent catalogues", bonus))
+        total += bonus
+    if e.other_candidates_on_star > 0:
+        factors.append(_factor("Other planets or candidates on the same star (multiplicity)", 10))
+        total += 10
+
+    # 3. Published false-positive probability
+    if e.eumemic_fpp is not None:
+        if e.eumemic_fpp < 0.015:
+            factors.append(
+                _factor(f"TRICERATOPS FPP {e.eumemic_fpp:.3f} (below validation threshold)", 10)
+            )
+            total += 10
+        elif e.eumemic_fpp > 0.5:
+            factors.append(_factor(f"TRICERATOPS FPP {e.eumemic_fpp:.2f}", -15))
+            total -= 15
+
+    # 4. Red flags from the transit itself
+    radius = e.published_radius_earth
+    if radius is None and e.depth_ppm and e.star_radius_rsun and 0 < e.depth_ppm < 1e6:
+        radius = e.star_radius_rsun * math.sqrt(e.depth_ppm / 1e6) * R_SUN_IN_R_EARTH
+    if radius is not None:
+        if radius > 25:
+            factors.append(
+                _factor(
+                    f"Implied radius {radius:.0f} R⊕: too large for a planet (likely eclipsing binary)",
+                    -30,
+                )
+            )
+            total -= 30
+        elif radius > 16:
+            factors.append(
+                _factor(f"Implied radius {radius:.0f} R⊕: larger than most known planets", -10)
+            )
+            total -= 10
+    elif e.depth_ppm and e.depth_ppm > 50_000:
+        factors.append(
+            _factor(f"Depth {e.depth_ppm / 1e4:.0f}%: deeper than a planet usually makes", -15)
+        )
+        total -= 15
+
+    for status, name, plus, minus in (
+        (e.localisation, "Transit source localised on the target", 5, -30),
+        (e.timing, "Transit timing consistent", 3, -20),
+    ):
+        if status == "supported":
+            factors.append(_factor(name, plus))
+            total += plus
+        elif status == "contradicted":
+            factors.append(
+                _factor(
+                    name.replace("localised on", "not localised on").replace(
+                        "consistent", "inconsistent"
+                    ),
+                    minus,
+                )
+            )
+            total += minus
+
+    return max(1, min(99, total)), factors
+
+
+async def score_signals(session: AsyncSession) -> dict[str, int]:
+    """Recompute and store planet_score / score_factors for every signal."""
+    signals = (
+        await session.execute(
+            select(
+                Signal.id,
+                Signal.target_id,
+                Signal.current_disposition,
+                Signal.source_localisation_status,
+                Signal.timing_consistency_status,
+                Signal.primary_depth_ppm,
+                Target.radius_rsun,
+            ).join(Target, Target.id == Signal.target_id)
+        )
+    ).all()
+    ev: dict[str, Evidence] = {}
+    by_target: dict[str, list[str]] = defaultdict(list)
+    for sid, tid, disp, loc, timing, depth, rstar in signals:
+        ev[sid] = Evidence(
+            disposition=disp,
+            localisation=loc or "unresolved",
+            timing=timing or "unresolved",
+            depth_ppm=depth,
+            star_radius_rsun=rstar,
+        )
+        by_target[tid].append(sid)
+
+    for sid, source, reported, raw in (
+        await session.execute(
+            select(
+                Report.signal_id,
+                Report.source_name,
+                Report.reported_disposition,
+                Report.raw_payload,
+            )
+        )
+    ).all():
+        e = ev.get(sid)
+        if e is None:
+            continue
+        e.sources.add(source)
+        raw = raw if isinstance(raw, dict) else {}
+        if source == "nasa_toi":
+            code = str(raw.get("tfopwg_disp") or "").strip().upper()
+            if code:
+                e.toi_dispositions.add(code)
+        elif source == "eumemic/exoplanets":
+            tier = str(raw.get("tier") or "").strip().upper()
+            if tier:
+                e.eumemic_tiers.add(tier)
+            for key in ("FPP", "FPP_c"):
+                try:
+                    fpp = float(raw.get(key))
+                except (TypeError, ValueError):
+                    continue
+                if not math.isnan(fpp):
+                    e.eumemic_fpp = fpp if e.eumemic_fpp is None else min(e.eumemic_fpp, fpp)
+                    break
+        elif source == "exofop_ctoi":
+            e.ctoi_dispositions.add((reported or "PC").upper())
+        elif source == "nasa_pscomppars":
+            try:
+                e.published_radius_earth = float(raw.get("pl_rade"))
+            except (TypeError, ValueError):
+                pass
+
+    for ids in by_target.values():
+        live = [i for i in ids if ev[i].disposition != "false_positive"]
+        for i in ids:
+            ev[i].other_candidates_on_star = len([j for j in live if j != i])
+
+    rows = []
+    histogram = {"0": 0, "1-29": 0, "30-59": 0, "60-89": 0, "90-100": 0}
+    for sid, e in ev.items():
+        value, factors = score(e)
+        rows.append({"_id": sid, "planet_score": value, "score_factors": factors})
+        bucket = (
+            "0"
+            if value == 0
+            else "1-29"
+            if value < 30
+            else "30-59"
+            if value < 60
+            else "60-89"
+            if value < 90
+            else "90-100"
+        )
+        histogram[bucket] += 1
+    from sqlalchemy import bindparam
+
+    stmt = (
+        update(Signal.__table__)
+        .where(Signal.__table__.c.id == bindparam("_id"))
+        .values(planet_score=bindparam("planet_score"), score_factors=bindparam("score_factors"))
+    )
+    for i in range(0, len(rows), 2000):
+        await session.execute(stmt, rows[i : i + 2000])
+    await session.commit()
+    return histogram

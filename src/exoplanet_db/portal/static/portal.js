@@ -107,35 +107,11 @@ function handleRoute() {
     // Default catalog tab
     switchTab('candidates', false);
 
-    // Parse query params if present in hash: #catalog?search=...&source=...
+    // Filters live in the hash: #catalog?search=...&source=...&min_score=...
     const qIndex = hash.indexOf('?');
-    if (qIndex !== -1) {
-      const params = new URLSearchParams(hash.slice(qIndex + 1));
-      let shouldReload = false;
-      if (params.has('search')) {
-        const sInput = document.getElementById('catalog-search');
-        if (sInput && sInput.value !== params.get('search')) {
-          sInput.value = params.get('search');
-          shouldReload = true;
-        }
-      }
-      if (params.has('source')) {
-        const srcSelect = document.getElementById('source-filter');
-        if (srcSelect && srcSelect.value !== params.get('source')) {
-          srcSelect.value = params.get('source');
-          shouldReload = true;
-        }
-      }
-      if (params.has('disposition')) {
-        const dSelect = document.getElementById('disposition-filter');
-        if (dSelect && dSelect.value !== params.get('disposition')) {
-          dSelect.value = params.get('disposition');
-          shouldReload = true;
-        }
-      }
-      if (shouldReload) {
-        loadCandidates();
-      }
+    const params = new URLSearchParams(qIndex !== -1 ? hash.slice(qIndex + 1) : '');
+    if (applyCatalogParams(params)) {
+      loadCandidates();
     }
   }
 }
@@ -244,17 +220,13 @@ async function initCatalog() {
     card.addEventListener('click', () => {
       const filter = card.getAttribute('data-filter');
       const dSelect = document.getElementById('disposition-filter');
-      const sSelect = document.getElementById('source-filter');
-      const searchBox = document.getElementById('catalog-search');
 
       if (filter === 'all') {
-        if (dSelect) dSelect.value = 'all';
-        if (sSelect) sSelect.value = 'all';
-        if (searchBox) searchBox.value = '';
+        applyCatalogParams(new URLSearchParams());
       } else if (filter === 'confirmed_planet') {
         if (dSelect) dSelect.value = 'confirmed_planet';
       } else if (filter === 'candidates') {
-        if (dSelect) dSelect.value = 'unclassified_transit_like_signal';
+        if (dSelect) dSelect.value = 'planet_candidate,unclassified_transit_like_signal';
       }
       syncCatalogUrl();
       loadCandidates();
@@ -285,23 +257,95 @@ async function initCatalog() {
       loadCandidates();
     });
   }
+
+  let advTimer;
+  for (const [id] of CATALOG_FILTERS.slice(3)) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    el.addEventListener(el.tagName === 'SELECT' ? 'change' : 'input', () => {
+      clearTimeout(advTimer);
+      advTimer = setTimeout(() => {
+        syncCatalogUrl();
+        loadCandidates();
+      }, 350);
+    });
+  }
+  document.getElementById('more-filters-toggle')?.addEventListener('click', (e) => {
+    const panel = document.getElementById('advanced-filters');
+    panel.hidden = !panel.hidden;
+    e.currentTarget.setAttribute('aria-expanded', String(!panel.hidden));
+  });
+  document.getElementById('reset-filters')?.addEventListener('click', () => {
+    applyCatalogParams(new URLSearchParams());
+    syncCatalogUrl();
+    loadCandidates();
+  });
+}
+
+// Every catalogue filter: [element id, API/URL parameter, default value]
+const CATALOG_FILTERS = [
+  ['catalog-search', 'search', ''],
+  ['source-filter', 'source', 'all'],
+  ['disposition-filter', 'disposition', 'all'],
+  ['f-min-period', 'min_period_d', ''],
+  ['f-max-period', 'max_period_d', ''],
+  ['f-min-depth', 'min_depth_ppm', ''],
+  ['f-max-depth', 'max_depth_ppm', ''],
+  ['f-min-duration', 'min_duration_h', ''],
+  ['f-max-duration', 'max_duration_h', ''],
+  ['f-min-score', 'min_score', ''],
+  ['f-max-score', 'max_score', ''],
+  ['f-localisation', 'localisation', 'all'],
+  ['f-timing', 'timing', 'all'],
+  ['f-sort', 'sort', 'period'],
+];
+const ADVANCED_FILTER_IDS = CATALOG_FILTERS.slice(3).map(([id]) => id).filter((id) => id !== 'f-sort');
+
+function catalogParams() {
+  const params = new URLSearchParams();
+  for (const [id, name, fallback] of CATALOG_FILTERS) {
+    const value = (document.getElementById(id)?.value || '').trim();
+    if (value && value !== fallback) params.set(name, value);
+  }
+  return params;
+}
+
+function applyCatalogParams(params) {
+  let changed = false;
+  for (const [id, name, fallback] of CATALOG_FILTERS) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    const value = params.get(name) ?? fallback;
+    if (el.value !== value) {
+      el.value = value;
+      changed = true;
+    }
+  }
+  updateFilterToggle();
+  return changed;
+}
+
+function updateFilterToggle() {
+  const toggle = document.getElementById('more-filters-toggle');
+  if (!toggle) return;
+  const active = ADVANCED_FILTER_IDS.filter((id) => {
+    const el = document.getElementById(id);
+    return el && el.value && el.value !== 'all';
+  }).length;
+  toggle.textContent = active ? `More filters (${active})` : 'More filters';
+  if (active) {
+    document.getElementById('advanced-filters').hidden = false;
+    toggle.setAttribute('aria-expanded', 'true');
+  }
 }
 
 function syncCatalogUrl() {
-  const searchVal = (document.getElementById('catalog-search')?.value || '').trim();
-  const sourceVal = document.getElementById('source-filter')?.value || 'all';
-  const dispVal = document.getElementById('disposition-filter')?.value || 'all';
-
-  const params = new URLSearchParams();
-  if (searchVal) params.set('search', searchVal);
-  if (sourceVal !== 'all') params.set('source', sourceVal);
-  if (dispVal !== 'all') params.set('disposition', dispVal);
-
-  const queryStr = params.toString();
+  const queryStr = catalogParams().toString();
   const newHash = queryStr ? `#catalog?${queryStr}` : '#catalog';
   if (window.location.hash !== newHash) {
     history.replaceState(null, '', newHash);
   }
+  updateFilterToggle();
 }
 
 async function loadCandidates() {
@@ -309,18 +353,15 @@ async function loadCandidates() {
   const countEl = document.getElementById('catalog-results-count');
   if (!grid) return;
 
-  const searchVal = (document.getElementById('catalog-search')?.value || '').trim();
-  const sourceVal = document.getElementById('source-filter')?.value || 'all';
-  const dispVal = document.getElementById('disposition-filter')?.value || 'all';
+  const filterParams = catalogParams();
+  const filtered = [...filterParams.keys()].some((k) => k !== 'sort');
 
   grid.innerHTML = '<div style="color: var(--text-muted); grid-column: 1/-1; text-align: center; padding: 2.5rem;">Loading planetary signals and candidates...</div>';
 
   const thisQuery = ++currentQueryId;
   try {
-    const params = new URLSearchParams({ limit: '100' });
-    if (searchVal) params.set('search', searchVal);
-    if (sourceVal !== 'all') params.set('source', sourceVal);
-    if (dispVal !== 'all') params.set('disposition', dispVal);
+    const params = new URLSearchParams(filterParams);
+    params.set('limit', '100');
 
     const res = await fetch(`/v1/candidates?${params.toString()}`);
     if (!res.ok) throw new Error(`HTTP error ${res.status}`);
@@ -332,7 +373,7 @@ async function loadCandidates() {
     const totalMatches = data.total ?? candidates.length;
 
     if (countEl) {
-      if (searchVal || sourceVal !== 'all' || dispVal !== 'all') {
+      if (filtered) {
         countEl.textContent = `Showing ${candidates.length} of ${totalMatches.toLocaleString()} candidates matching filters`;
       } else {
         countEl.textContent = `Showing ${candidates.length} of ${totalMatches.toLocaleString()} total planets & candidates`;
@@ -368,6 +409,19 @@ async function loadCandidates() {
   }
 }
 
+const SCORE_HELP =
+  'Planet score: a 0–100 heuristic of how likely this is a real planet, from its strongest catalogue classification adjusted for support and red flags. Not a calibrated probability.';
+
+function renderPlanetScore(score, compact = true) {
+  if (score === null || score === undefined) return '';
+  const tone = score >= 90 ? 'high' : score >= 60 ? 'good' : score >= 30 ? 'mid' : score > 0 ? 'low' : 'zero';
+  return `
+    <span class="planet-score planet-score-${tone}${compact ? '' : ' planet-score-large'}" title="${escapeHtml(SCORE_HELP)}">
+      <span class="planet-score-bar" aria-hidden="true"><i style="width:${Math.max(2, score)}%"></i></span>
+      <span class="planet-score-value">${score}</span>${compact ? '' : '<span class="planet-score-max">/ 100</span>'}
+    </span>`;
+}
+
 function renderCandidateCard(c) {
   const dispClass = {
     'confirmed_planet': 'badge-confirmed',
@@ -391,7 +445,7 @@ function renderCandidateCard(c) {
         </div>
         <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 0.35rem;">
           <span class="badge ${dispClass}">${dispLabel}</span>
-          <span class="source-badge ${srcClass}" title="Source: ${escapeHtml(src)}">${escapeHtml(src)}</span>
+          <span class="source-badge ${srcClass}" title="${escapeHtml((c.source_names && c.source_names.length ? c.source_names : [src]).join(', '))}">${escapeHtml(src)}${c.source_names && c.source_names.length > 1 ? ` +${c.source_names.length - 1}` : ''}</span>
         </div>
       </div>
 
@@ -411,6 +465,7 @@ function renderCandidateCard(c) {
       </div>
 
       <div class="status-tags">
+        ${renderPlanetScore(c.planet_score)}
         <span class="tag-pill">Loc: ${escapeHtml(c.source_localisation_status)}</span>
         <span class="tag-pill">Timing: ${escapeHtml(c.timing_consistency_status)}</span>
         ${c.scientific_limits && c.scientific_limits.length ? `<span class="tag-pill">${c.scientific_limits.length} Limits</span>` : ''}
@@ -564,6 +619,18 @@ function renderDossier(c) {
       <span class="tag-pill">Localisation: ${escapeHtml(c.source_localisation_status)}</span>
       <span class="tag-pill">Timing: ${escapeHtml(c.timing_consistency_status)}</span>
     </div>
+
+    ${c.planet_score !== null && c.planet_score !== undefined ? `
+      <details class="detail-score">
+        <summary>
+          <span class="metric-label">Planet score</span>
+          ${renderPlanetScore(c.planet_score, false)}
+          <span class="detail-score-hint">heuristic, not a probability · why?</span>
+        </summary>
+        <ul class="score-factors">
+          ${(c.score_factors || []).map((f, i) => `<li><span class="score-delta">${i === 0 ? '' : f.delta > 0 ? '+' : ''}${f.delta}</span>${escapeHtml(f.label)}</li>`).join('')}
+        </ul>
+      </details>` : ''}
 
     <div class="detail-source">
       <span class="metric-label">Source</span>
@@ -802,6 +869,15 @@ async function calculateObservationQueue() {
     max_timing_uncertainty_min: val('obs-max-sigma', '120'),
     limit: '100',
   });
+  const minScore = val('obs-min-score', '');
+  if (minScore !== '') params.set('min_planet_score', minScore);
+  const boxes = [...document.querySelectorAll('#obs-sources input[type=checkbox]')];
+  const checked = boxes.filter((b) => b.checked).map((b) => b.value);
+  if (checked.length === 0) {
+    container.innerHTML = '<div class="queue-message">Select at least one source.</div>';
+    return;
+  }
+  if (checked.length < boxes.length) checked.forEach((v) => params.append('source', v));
 
   try {
     const res = await fetch(`/v1/observations/queue?${params.toString()}`);
@@ -829,6 +905,7 @@ async function calculateObservationQueue() {
           <thead>
             <tr>
               <th>Priority</th>
+              <th>Planet score</th>
               <th>Signal</th>
               <th>Mid-transit</th>
               <th>Observe from → to</th>
@@ -842,11 +919,13 @@ async function calculateObservationQueue() {
             ${data.items.map((item) => `
               <tr>
                 <td><span class="score-badge">${item.priority_score.toFixed(2)}</span></td>
+                <td>${renderPlanetScore(item.planet_score)}</td>
                 <td>
                   <a href="#candidate/${encodeURIComponent(item.signal_id)}" class="queue-link" data-id="${escapeHtml(item.signal_id)}">
                     <strong>${escapeHtml(item.signal_name)}</strong>
                   </a><br>
-                  <small class="queue-sub">${escapeHtml(item.target_name)} · ${escapeHtml(item.current_disposition.replace(/_/g, ' '))}</small>
+                  <small class="queue-sub">${escapeHtml(item.target_name)} · ${escapeHtml(item.current_disposition.replace(/_/g, ' '))}</small><br>
+                  <small class="queue-sub">${(item.source_names || []).map((n) => escapeHtml(n)).join(', ')}</small>
                 </td>
                 <td class="mono">${fmtTime(item.transit_mid_utc)}<br><small class="queue-sub">${fmtUtc(item.transit_mid_utc)} UTC</small></td>
                 <td class="mono">${fmtTime(item.window_start_utc)}<br>→ ${fmtTime(item.window_end_utc)}</td>

@@ -177,7 +177,7 @@ class EumemicIngest:
                     primary_depth_ppm=r["depth_ppm"],
                     current_disposition=tier_disposition,
                     source_localisation_status="unresolved",
-                    timing_consistency_status="supported",
+                    timing_consistency_status="unresolved",
                     scientific_limits=limits,
                 )
                 self.session.add(signal)
@@ -200,7 +200,8 @@ class EumemicIngest:
                 epoch_err_d=r["t0_err_d"],
                 duration_h=r["duration_h"],
                 depth_ppm=r["depth_ppm"],
-                raw_payload=r["raw"],
+                # The tier comes from tiers_earlier_candidates.csv for earlier releases
+                raw_payload={**r["raw"], "tier": r["tier"]},
                 license="CC BY 4.0",
             )
             report = await upsert_report(self.session, report)

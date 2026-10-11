@@ -210,6 +210,18 @@ class CandidateSummary(BaseModel):
     source_localisation_status: str
     timing_consistency_status: str
     scientific_limits: list[str]
+    planet_score: int | None = Field(
+        None,
+        description="0-100 heuristic of how likely this is a real planet (not a calibrated probability)",
+    )
+    source_names: list[str] = Field(
+        default_factory=list, description="Every catalogue reporting it"
+    )
+
+
+class ScoreFactor(BaseModel):
+    label: str
+    delta: int
 
 
 class SourceReference(BaseModel):
@@ -255,6 +267,7 @@ class PlanetPhysics(BaseModel):
 
 
 class CandidateDetailResponse(CandidateSummary):
+    score_factors: list[ScoreFactor] = Field(default_factory=list)
     host_star: HostStarResponse | None = None
     epoch_err_d: float | None = None
     planet: PlanetPhysics | None = None
@@ -309,6 +322,8 @@ class ObservationQueueItem(BaseModel):
     altitude_egress_deg: float | None = Field(None, description="Target altitude at window end")
     duration_assumed: bool = Field(False, description="No published duration; 2.5 h assumed")
     depth_ppm: float | None = None
+    planet_score: int | None = None
+    source_names: list[str] = Field(default_factory=list)
 
 
 class ObservationQueueResponse(BaseModel):
@@ -532,16 +547,28 @@ async def get_system(
 @app.get("/v1/candidates", response_model=PaginatedResponse, tags=["Catalog"])
 async def list_candidates(
     search: str | None = Query(
-        None, description="Search by candidate name, target name, TIC ID, or Gaia ID"
-    ),
-    source: str | None = Query(
         None,
-        description="Filter by data source: nasa_pscomppars, nasa_toi, exofop_ctoi, eumemic/exoplanets, git:brahle/exoplanet-candidates",
+        description="Search by candidate name, target name, TIC ID, Gaia ID or any source identifier",
     ),
-    disposition: str | None = Query(None, description="Filter by scientific disposition"),
+    source: list[str] | None = Query(
+        None,
+        description="Any of these sources (repeat or comma-separate): nasa_pscomppars, nasa_toi, exofop_ctoi, eumemic/exoplanets, git:brahle/exoplanet-candidates",
+    ),
+    disposition: list[str] | None = Query(None, description="Any of these dispositions"),
     min_period_d: float | None = Query(None, ge=0.0),
     max_period_d: float | None = Query(None, ge=0.0),
     min_depth_ppm: float | None = Query(None, ge=0.0),
+    max_depth_ppm: float | None = Query(None, ge=0.0),
+    min_duration_h: float | None = Query(None, ge=0.0),
+    max_duration_h: float | None = Query(None, ge=0.0),
+    localisation: list[str] | None = Query(None, description="supported, contradicted, unresolved"),
+    timing: list[str] | None = Query(None, description="supported, contradicted, unresolved"),
+    min_score: int | None = Query(None, ge=0, le=100, description="Minimum planet score"),
+    max_score: int | None = Query(None, ge=0, le=100),
+    sort: str = Query(
+        "period",
+        description="period, -period, depth, -depth, duration, -duration, score, -score, name",
+    ),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     session: AsyncSession = Depends(get_session),
@@ -555,6 +582,14 @@ async def list_candidates(
         min_period_d=min_period_d,
         max_period_d=max_period_d,
         min_depth_ppm=min_depth_ppm,
+        max_depth_ppm=max_depth_ppm,
+        min_duration_h=min_duration_h,
+        max_duration_h=max_duration_h,
+        localisation=localisation,
+        timing=timing,
+        min_score=min_score,
+        max_score=max_score,
+        sort=sort,
         limit=limit,
         offset=offset,
     )
@@ -575,6 +610,8 @@ async def list_candidates(
             source_localisation_status=s.source_localisation_status,
             timing_consistency_status=s.timing_consistency_status,
             scientific_limits=s.scientific_limits,
+            planet_score=s.planet_score,
+            source_names=sorted({r.source_name for r in s.reports}),
         )
         for s in signals
     ]
@@ -627,6 +664,9 @@ async def get_candidate(
         source_localisation_status=signal.source_localisation_status,
         timing_consistency_status=signal.timing_consistency_status,
         scientific_limits=signal.scientific_limits,
+        planet_score=signal.planet_score,
+        score_factors=[ScoreFactor(**f) for f in (signal.score_factors or [])],
+        source_names=sorted({src["source_name"] for src in detail["sources"]}),
         host_star=host_star,
         planet=PlanetPhysics(**detail["planet"]),
         primary_source=SourceReference(**primary) if primary else None,
@@ -707,6 +747,10 @@ async def get_observation_queue(
         120.0, gt=0.0, le=1440.0, description="Transits predicted less precisely are not observable"
     ),
     observable_only: bool = Query(True, description="Drop transits that fail any constraint"),
+    source: list[str] | None = Query(
+        None, description="Only signals reported by any of these sources"
+    ),
+    min_planet_score: int | None = Query(None, ge=0, le=100),
     elevation_m: float = Query(0.0, ge=-500.0, le=9000.0),
     session: AsyncSession = Depends(get_session),
 ):
@@ -741,6 +785,8 @@ async def get_observation_queue(
         max_timing_uncertainty_min=max_timing_uncertainty_min,
         observable_only=observable_only,
         height_m=elevation_m,
+        sources=[x.strip() for v in (source or []) for x in v.split(",") if x.strip()] or None,
+        min_planet_score=min_planet_score,
     )
     return ObservationQueueResponse(
         items=[ObservationQueueItem(**item) for item in result["items"]],

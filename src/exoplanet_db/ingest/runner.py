@@ -327,8 +327,9 @@ class IngestionRunner:
                     primary_duration_h=duration,
                     primary_depth_ppm=depth,
                     current_disposition=disposition,
-                    source_localisation_status="supported",
-                    timing_consistency_status="supported" if period > 0 else "unresolved",
+                    # The TOI table makes no localisation or timing assessment
+                    source_localisation_status="unresolved",
+                    timing_consistency_status="unresolved",
                     scientific_limits=limits,
                 )
                 self.session.add(matched_signal)

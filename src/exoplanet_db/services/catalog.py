@@ -87,29 +87,47 @@ class CatalogService:
         res = await self.session.execute(query)
         return res.scalars().first()
 
+    SORTS = {
+        "period": (Signal.primary_period_d.asc(),),
+        "-period": (Signal.primary_period_d.desc(),),
+        "depth": (Signal.primary_depth_ppm.asc(),),
+        "-depth": (Signal.primary_depth_ppm.desc(),),
+        "duration": (Signal.primary_duration_h.asc(),),
+        "-duration": (Signal.primary_duration_h.desc(),),
+        "score": (Signal.planet_score.asc(),),
+        "-score": (Signal.planet_score.desc(),),
+        "name": (Signal.display_name.asc(),),
+    }
+
     async def list_candidates(
         self,
         search: str | None = None,
-        source: str | None = None,
-        disposition: str | None = None,
+        source: str | list[str] | None = None,
+        disposition: str | list[str] | None = None,
         min_period_d: float | None = None,
         max_period_d: float | None = None,
         min_depth_ppm: float | None = None,
+        max_depth_ppm: float | None = None,
+        min_duration_h: float | None = None,
+        max_duration_h: float | None = None,
+        localisation: str | list[str] | None = None,
+        timing: str | list[str] | None = None,
+        min_score: int | None = None,
+        max_score: int | None = None,
+        sort: str = "period",
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[Signal], int]:
-        query = (
-            select(Signal)
-            .join(Signal.target)
-            .options(
-                joinedload(Signal.target),
-            )
-        )
-        count_query = select(func.count(Signal.id)).join(Signal.target)
+        def as_list(v: str | list[str] | None) -> list[str]:
+            if v is None:
+                return []
+            values = v if isinstance(v, list) else [v]
+            return [x.strip() for item in values for x in item.split(",") if x.strip()]
 
+        conds = []
         if search:
             s_pat = f"%{search.strip()}%"
-            search_cond = (
+            conds.append(
                 Signal.display_name.ilike(s_pat)
                 | Target.primary_name.ilike(s_pat)
                 | Target.tic_id.ilike(s_pat)
@@ -118,34 +136,48 @@ class CatalogService:
                 # signal merged under its confirmed-planet name is still found by its TOI name
                 | Signal.id.in_(select(Report.signal_id).where(Report.source_key.ilike(s_pat)))
             )
-            query = query.where(search_cond)
-            count_query = count_query.where(search_cond)
+        if sources := as_list(source):
+            # Any of the sources, from the report rows that actually came from them
+            conds.append(
+                Signal.id.in_(select(Report.signal_id).where(Report.source_name.in_(sources)))
+            )
+        if dispositions := as_list(disposition):
+            conds.append(Signal.current_disposition.in_(dispositions))
+        if statuses := as_list(localisation):
+            conds.append(Signal.source_localisation_status.in_(statuses))
+        if statuses := as_list(timing):
+            conds.append(Signal.timing_consistency_status.in_(statuses))
+        for column, lo, hi in (
+            (Signal.primary_period_d, min_period_d, max_period_d),
+            (Signal.primary_depth_ppm, min_depth_ppm, max_depth_ppm),
+            (Signal.primary_duration_h, min_duration_h, max_duration_h),
+            (Signal.planet_score, min_score, max_score),
+        ):
+            if lo is not None:
+                conds.append(column >= lo)
+            if hi is not None:
+                conds.append(column <= hi)
+        if min_period_d is not None or max_period_d is not None:
+            conds.append(Signal.primary_period_d > 0)  # 0 means "unknown", never "short"
 
-        if source:
-            # Filter on the report rows that actually came from the source
-            cond = Signal.id.in_(select(Report.signal_id).where(Report.source_name == source))
-            query = query.where(cond)
-            count_query = count_query.where(cond)
+        count_query = select(func.count(Signal.id)).join(Signal.target).where(*conds)
+        total = (await self.session.execute(count_query)).scalar() or 0
 
-        if disposition:
-            query = query.where(Signal.current_disposition == disposition)
-            count_query = count_query.where(Signal.current_disposition == disposition)
-        if min_period_d is not None:
-            query = query.where(Signal.primary_period_d >= min_period_d)
-            count_query = count_query.where(Signal.primary_period_d >= min_period_d)
-        if max_period_d is not None:
-            query = query.where(Signal.primary_period_d <= max_period_d)
-            count_query = count_query.where(Signal.primary_period_d <= max_period_d)
-        if min_depth_ppm is not None:
-            query = query.where(Signal.primary_depth_ppm >= min_depth_ppm)
-            count_query = count_query.where(Signal.primary_depth_ppm >= min_depth_ppm)
-
-        total_res = await self.session.execute(count_query)
-        total = total_res.scalar() or 0
-
-        query = query.order_by(Signal.primary_period_d).limit(limit).offset(offset)
-        res = await self.session.execute(query)
-        items = list(res.scalars().all())
+        order = self.SORTS.get(sort, self.SORTS["period"])
+        query = (
+            select(Signal)
+            .join(Signal.target)
+            .where(*conds)
+            .options(
+                joinedload(Signal.target),
+                selectinload(Signal.reports),
+                selectinload(Signal.ephemeris_fits),
+            )
+            .order_by(*(o.nulls_last() for o in order), Signal.display_name)
+            .limit(limit)
+            .offset(offset)
+        )
+        items = list((await self.session.execute(query)).scalars().unique().all())
         return items, total
 
     async def get_candidate_by_id(self, signal_id: str) -> Signal | None:
@@ -345,6 +377,8 @@ class CatalogService:
         max_timing_uncertainty_min: float = 120.0,
         observable_only: bool = True,
         height_m: float = 0.0,
+        sources: list[str] | None = None,
+        min_planet_score: int | None = None,
     ) -> dict[str, Any]:
         """Observable transits in [start_time, end_time] for one site: {"items", "total"}."""
         import asyncio
@@ -369,6 +403,7 @@ class CatalogService:
                     Signal.current_disposition,
                     Signal.primary_duration_h,
                     Signal.primary_depth_ppm,
+                    Signal.planet_score,
                     Target.id,
                     Target.primary_name,
                     Target.ra_deg,
@@ -383,6 +418,20 @@ class CatalogService:
                     Signal.current_disposition != "false_positive",
                     ~((Target.ra_deg == 0.0) & (Target.dec_deg == 0.0)),
                     max_alt_cond,
+                    *(
+                        [
+                            Signal.id.in_(
+                                select(Report.signal_id).where(Report.source_name.in_(sources))
+                            )
+                        ]
+                        if sources
+                        else []
+                    ),
+                    *(
+                        [Signal.planet_score >= min_planet_score]
+                        if min_planet_score is not None
+                        else []
+                    ),
                 )
             )
         ).all()
@@ -405,6 +454,7 @@ class CatalogService:
                 "signal_id": sid,
                 "signal_name": sname,
                 "disposition": disp,
+                "planet_score": pscore,
                 "target_id": tid,
                 "target_name": tname,
                 "ra_deg": ra,
@@ -424,6 +474,7 @@ class CatalogService:
                 disp,
                 sdur,
                 sdep,
+                pscore,
                 tid,
                 tname,
                 ra,
@@ -446,6 +497,18 @@ class CatalogService:
         )
         # CPU-bound astropy/numpy work: keep the event loop (and /healthz) responsive
         items, total = await asyncio.to_thread(compute_queue, records, settings)
+        if items:
+            names: dict[str, set[str]] = {}
+            for sid, src in (
+                await self.session.execute(
+                    select(Report.signal_id, Report.source_name).where(
+                        Report.signal_id.in_({it["signal_id"] for it in items})
+                    )
+                )
+            ).all():
+                names.setdefault(sid, set()).add(src)
+            for it in items:
+                it["source_names"] = sorted(names.get(it["signal_id"], ()))
         return {"items": items, "total": total}
 
     async def get_source_status(self) -> list[dict[str, Any]]:

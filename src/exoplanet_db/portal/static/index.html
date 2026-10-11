@@ -133,10 +133,70 @@
           <option value="all">All Scientific Dispositions</option>
           <option value="confirmed_planet">Confirmed Planets</option>
           <option value="validated_planet">Validated Planets</option>
+          <option value="planet_candidate,unclassified_transit_like_signal">All Candidates &amp; Signals</option>
           <option value="planet_candidate">Planet Candidates</option>
           <option value="unclassified_transit_like_signal">Unclassified Signals</option>
           <option value="false_positive">False Positives</option>
         </select>
+
+        <button type="button" id="more-filters-toggle" class="filter-select more-filters-toggle" aria-expanded="false" aria-controls="advanced-filters">More filters</button>
+      </div>
+
+      <div id="advanced-filters" class="advanced-filters" hidden>
+        <div class="adv-group">
+          <span class="adv-label">Period (days)</span>
+          <input type="number" id="f-min-period" class="form-input" placeholder="min" min="0" step="any">
+          <input type="number" id="f-max-period" class="form-input" placeholder="max" min="0" step="any">
+        </div>
+        <div class="adv-group">
+          <span class="adv-label">Depth (ppm)</span>
+          <input type="number" id="f-min-depth" class="form-input" placeholder="min" min="0" step="any">
+          <input type="number" id="f-max-depth" class="form-input" placeholder="max" min="0" step="any">
+        </div>
+        <div class="adv-group">
+          <span class="adv-label">Duration (hours)</span>
+          <input type="number" id="f-min-duration" class="form-input" placeholder="min" min="0" step="any">
+          <input type="number" id="f-max-duration" class="form-input" placeholder="max" min="0" step="any">
+        </div>
+        <div class="adv-group">
+          <span class="adv-label">Planet score</span>
+          <input type="number" id="f-min-score" class="form-input" placeholder="min" min="0" max="100" step="1">
+          <input type="number" id="f-max-score" class="form-input" placeholder="max" min="0" max="100" step="1">
+        </div>
+        <div class="adv-group">
+          <label class="adv-label" for="f-localisation">Localisation</label>
+          <select id="f-localisation" class="form-input">
+            <option value="all">Any</option>
+            <option value="supported">Supported</option>
+            <option value="unresolved">Unresolved</option>
+            <option value="contradicted">Contradicted</option>
+          </select>
+        </div>
+        <div class="adv-group">
+          <label class="adv-label" for="f-timing">Timing</label>
+          <select id="f-timing" class="form-input">
+            <option value="all">Any</option>
+            <option value="supported">Supported</option>
+            <option value="unresolved">Unresolved</option>
+            <option value="contradicted">Contradicted</option>
+          </select>
+        </div>
+        <div class="adv-group">
+          <label class="adv-label" for="f-sort">Sort by</label>
+          <select id="f-sort" class="form-input">
+            <option value="period">Period ↑</option>
+            <option value="-period">Period ↓</option>
+            <option value="-score">Planet score ↓</option>
+            <option value="score">Planet score ↑</option>
+            <option value="-depth">Depth ↓</option>
+            <option value="depth">Depth ↑</option>
+            <option value="-duration">Duration ↓</option>
+            <option value="name">Name</option>
+          </select>
+        </div>
+        <div class="adv-group adv-actions">
+          <button type="button" id="reset-filters" class="filter-select">Reset filters</button>
+        </div>
       </div>
 
       <div class="catalog-status-bar">
@@ -189,6 +249,22 @@
           <label class="form-label" for="obs-max-sigma">Max Timing Uncertainty (min)</label>
           <input type="number" step="5" id="obs-max-sigma" class="form-input" value="120" min="5" max="1440">
         </div>
+
+        <div class="form-group">
+          <label class="form-label" for="obs-min-score">Min Planet Score</label>
+          <input type="number" step="5" id="obs-min-score" class="form-input" value="" placeholder="any" min="0" max="100">
+        </div>
+
+        <fieldset class="form-group obs-sources-group">
+          <legend class="form-label">Sources (any of)</legend>
+          <div class="queue-sources" id="obs-sources">
+            <label><input type="checkbox" value="nasa_pscomppars" checked> NASA confirmed</label>
+            <label><input type="checkbox" value="nasa_toi" checked> TOI</label>
+            <label><input type="checkbox" value="exofop_ctoi" checked> ExoFOP CTOI</label>
+            <label><input type="checkbox" value="eumemic/exoplanets" checked> eumemic</label>
+            <label><input type="checkbox" value="git:brahle/exoplanet-candidates" checked> Dossiers</label>
+          </div>
+        </fieldset>
 
         <div class="form-group">
           <label class="form-label" for="obs-min-priority">Min Priority Score</label>
@@ -329,7 +405,7 @@ pip install git+https://github.com/brahle/exoplanet-db.git
         <strong>Community Dataset Attribution:</strong> Planetary candidate and community dossiers incorporate data from <em>eumemic/exoplanets</em> and ExoFOP TOI/CTOI registries, distributed under the <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">Creative Commons Attribution 4.0 International (CC BY 4.0)</a> license.
       </div>
       <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 0.5rem; font-size: 0.75rem; color: var(--text-muted);">
-        <span>Exoplanet DB v0.1.24 — Homelab Instance (marica)</span>
+        <span>Exoplanet DB v0.1.25 — Homelab Instance (marica)</span>
         <span>Software released under the MIT License</span>
       </div>
     </div>

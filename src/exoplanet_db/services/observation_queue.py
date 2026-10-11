@@ -192,6 +192,7 @@ def compute_queue(rows: list[dict[str, Any]], s: QueueSettings) -> tuple[list[di
             duration_h=float(dur_h[idx[k]]),
             is_observable=bool(observable[k]),
             is_coherent=True,
+            credibility=r["planet_score"] / 100.0 if r.get("planet_score") is not None else None,
         )
         if score < s.min_priority:
             continue
@@ -215,6 +216,7 @@ def compute_queue(rows: list[dict[str, Any]], s: QueueSettings) -> tuple[list[di
                 "depth_ppm": r["depth_ppm"],
                 "timing_uncertainty_min": round(float(sigma_min[k]), 2),
                 "priority_score": score,
+                "planet_score": r.get("planet_score"),
                 "target_altitude_deg": round(float(alt_mid[k]), 2),
                 "altitude_ingress_deg": round(float(alt1[k]), 2),
                 "altitude_egress_deg": round(float(alt4[k]), 2),

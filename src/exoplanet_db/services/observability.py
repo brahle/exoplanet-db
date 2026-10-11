@@ -73,6 +73,7 @@ def compute_priority_score(
     duration_h: float,
     is_observable: bool,
     is_coherent: bool = True,
+    credibility: float | None = None,
 ) -> float:
     """
     Ranks observation priority using a multi-factor score:
@@ -90,7 +91,8 @@ def compute_priority_score(
         "unclassified_transit_like_signal": 0.50,
         "false_positive": 0.0,
     }
-    w_cred = weights.get(disposition, 0.5)
+    # The planet score (0-100) is the credibility when known; else a flat per-disposition weight
+    w_cred = credibility if credibility is not None else weights.get(disposition, 0.5)
     if w_cred == 0.0:
         return 0.0
 

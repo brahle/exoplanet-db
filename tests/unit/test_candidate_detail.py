@@ -210,3 +210,35 @@ async def test_search_matches_source_identifiers(client: AsyncClient):
     # "dossier-1" is only a report source_key, not a signal or target name
     res = await client.get("/v1/candidates", params={"search": "dossier-1"})
     assert [i["id"] for i in res.json()["items"]] == ["s1"]
+
+
+@pytest.mark.asyncio
+async def test_candidate_filters_and_sorting(client: AsyncClient, session):
+    from exoplanet_db.services.planet_score import score_signals
+
+    await score_signals(session)
+    res = await client.get("/v1/candidates", params={"source": "nasa_pscomppars"})
+    assert [i["id"] for i in res.json()["items"]] == ["s1"]
+    res = await client.get(
+        "/v1/candidates",
+        params=[("source", "nasa_pscomppars"), ("source", "git:brahle/exoplanet-candidates")],
+    )
+    assert res.json()["total"] == 1
+    res = await client.get("/v1/candidates", params={"min_depth_ppm": 1000, "max_period_d": 5})
+    assert [i["id"] for i in res.json()["items"]] == ["s1"]
+    res = await client.get("/v1/candidates", params={"max_period_d": 100})
+    assert res.json()["total"] == 2
+    res = await client.get("/v1/candidates", params={"min_duration_h": 3})
+    assert res.json()["total"] == 0
+    items = (await client.get("/v1/candidates", params={"sort": "-score"})).json()["items"]
+    assert items[0]["id"] == "s1" and items[0]["planet_score"] == 100
+    assert items[0]["source_names"] == ["git:brahle/exoplanet-candidates", "nasa_pscomppars"]
+    # Both fixture signals are confirmed planets
+    res = await client.get("/v1/candidates", params={"min_score": 90})
+    assert [i["id"] for i in res.json()["items"]] == ["s1", "s2"]
+    res = await client.get("/v1/candidates", params={"max_score": 50})
+    assert res.json()["total"] == 0
+    res = await client.get("/v1/candidates", params={"localisation": "contradicted"})
+    assert res.json()["total"] == 0
+    detail = (await client.get("/v1/candidates/s1")).json()
+    assert detail["score_factors"][0]["delta"] == 100

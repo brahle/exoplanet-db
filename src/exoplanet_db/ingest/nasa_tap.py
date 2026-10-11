@@ -173,6 +173,7 @@ async def run_ingest(source: str = "all", limit: int | None = None) -> list[str]
     from exoplanet_db.ingest.git_dossier import fetch_and_ingest_github_dossiers
     from exoplanet_db.ingest.runner import IngestionRunner
     from exoplanet_db.services.dedup import dedupe_signals
+    from exoplanet_db.services.planet_score import score_signals
 
     db_url = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///exoplanet_db.sqlite")
     if db_url.startswith("postgres://"):
@@ -251,6 +252,14 @@ async def run_ingest(source: str = "all", limit: int | None = None) -> list[str]
         except Exception as exc:
             failed.append("tic")
             print(f"[tic] FAILED: {exc!r}", flush=True)
+
+    # Last: scores use the merged signals and the enriched stellar radii
+    async with session_factory() as session:
+        try:
+            print(f"[score] planet score distribution {await score_signals(session)}", flush=True)
+        except Exception as exc:
+            failed.append("score")
+            print(f"[score] FAILED: {exc!r}", flush=True)
 
     await engine.dispose()
     return failed
