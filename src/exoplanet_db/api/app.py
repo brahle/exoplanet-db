@@ -721,7 +721,8 @@ async def get_observation_queue(
     if end_time.tzinfo is None:
         end_time = end_time.replace(tzinfo=UTC)
     span_days = (end_time - start_time).total_seconds() / 86400.0
-    if span_days <= 0 or span_days > MAX_WINDOW_DAYS:
+    # A few minutes of slack so "now + 7 days" from a form is never rejected
+    if span_days <= 0 or span_days > MAX_WINDOW_DAYS + 10 / 1440:
         raise HTTPException(
             status_code=422,
             detail=f"end_time must be after start_time and within {MAX_WINDOW_DAYS:g} days of it",
