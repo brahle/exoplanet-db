@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from exoplanet_db.ingest.eumemic import PUBLISHED_TIERS, EumemicIngest, _earlier_tier
 from exoplanet_db.models.base import Base
-from exoplanet_db.models.entities import Report, Signal
+from exoplanet_db.models.entities import Report, Signal, Target
 
 # Header and rows in the shape of results_public/candidates_allsky.csv
 ALLSKY_CSV = """TIC,P_d,P_err,T0_BJD,Rp_Re,b,T14_h,depth_ppm,MES,n_transits,Tmag,Teff,Rstar,dist_pc,ruwe,set,tier
@@ -75,4 +77,111 @@ async def test_ingest_published_candidates_is_idempotent():
             f"https://github.com/eumemic/exoplanets/blob/{sha}/results_public/candidates_allsky.csv"
         )
         assert rep.license == "CC BY 4.0"
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_discarded_rows_are_ingested_with_their_verdict():
+    from exoplanet_db.ingest.eumemic import attach_vetting_rows, parse_vetting_rows
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    csv_text = ALLSKY_CSV.replace(",tier\n", ",tier,c_reason\n", 1).replace(",C\n", ",C,grazing\n")
+    rows = EumemicIngest(None).parse_candidates_csv(csv_text)
+
+    async with factory() as session:
+        assert await EumemicIngest(session).ingest_candidates(rows, commit_sha="abc") == 5
+    async with factory() as session:
+        by_name = {
+            s.display_name: s for s in (await session.execute(select(Signal))).scalars().all()
+        }
+        eb = by_name["TIC 200000003 (1.250 d)"]
+        assert eb.current_disposition == "false_positive"
+        assert any("likely eclipsing binary" in x for x in eb.scientific_limits)
+        c = by_name["TIC 200000004 (9.000 d)"]
+        assert c.current_disposition == "unclassified_transit_like_signal"
+        assert any("tier C" in x and "(grazing)" in x for x in c.scientific_limits)
+
+    # Re-tiered in a later release: the old verdict is replaced, not appended
+    retiered = [dict(r, tier="B") if r["tic"] == "200000004" else r for r in rows]
+    async with factory() as session:
+        await EumemicIngest(session).ingest_candidates(retiered, commit_sha="def")
+    async with factory() as session:
+        c = (
+            await session.execute(
+                select(Signal).where(Signal.display_name == "TIC 200000004 (9.000 d)")
+            )
+        ).scalar_one()
+        assert c.current_disposition == "planet_candidate"
+        assert [x for x in c.scientific_limits if x.startswith("eumemic")] == [
+            "eumemic/exoplanets tier B candidate (results_public/candidates.csv)"
+        ]
+
+    # Vetting evidence attaches to existing signals only, never creates them
+    vet_csv = (
+        "tic,rank,period,t0,duration_h,depth_ppm,fails,MES,snr,known_status\n"
+        "200000003,1,1.25,2002.5,1.5,900,significant secondary; odd-even transit differences,9,10,new\n"
+        "999999999,1,4.0,2000.0,2.0,500,,9,10,new\n"
+    )
+    vet = parse_vetting_rows(vet_csv, "vetted_signals_tce")
+    assert vet[0]["epoch_bjd"] == 2459002.5
+    async with factory() as session:
+        before = (await session.execute(select(func.count(Signal.id)))).scalar()
+        res = await attach_vetting_rows(session, vet, "abc", ["vetted_signals_tce.csv.gz"])
+        assert res == {"rows": 2, "attached": 1, "with_failed_tests": 1}
+        assert (await session.execute(select(func.count(Signal.id)))).scalar() == before
+        rep = (
+            await session.execute(
+                select(Report).where(Report.source_name == "eumemic/exoplanets:vetting")
+            )
+        ).scalar_one()
+        assert rep.raw_payload["fails"] == ["significant secondary", "odd-even transit differences"]
+        assert rep.source_key == "vetted_signals_tce:TIC200000003_P1.2500"
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_discard_does_not_override_a_toi_disposition():
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as session:
+        sig = Signal(
+            target_id="t",
+            display_name="TOI-9.01",
+            primary_period_d=1.25,
+            primary_epoch_bjd=2459002.5,
+            current_disposition="planet_candidate",
+            scientific_limits=[],
+        )
+        session.add(
+            Target(id="t", primary_name="TIC 200000003", tic_id="200000003", ra_deg=1, dec_deg=1)
+        )
+        session.add(sig)
+        await session.flush()
+        session.add(
+            Report(
+                target_id="t",
+                signal_id=sig.id,
+                source_name="nasa_toi",
+                source_key="TOI-9.01",
+                retrieval_utc=datetime.now(UTC),
+                author_or_team="x",
+                reported_disposition="planet_candidate",
+                raw_payload={},
+            )
+        )
+        await session.commit()
+    rows = [
+        r for r in EumemicIngest(None).parse_candidates_csv(ALLSKY_CSV) if r["tic"] == "200000003"
+    ]
+    async with factory() as session:
+        await EumemicIngest(session).ingest_candidates(rows, commit_sha="abc")
+    async with factory() as session:
+        s = (await session.execute(select(Signal))).scalar_one()
+        assert s.current_disposition == "planet_candidate"
+        assert any("likely eclipsing binary" in x for x in s.scientific_limits)
     await engine.dispose()

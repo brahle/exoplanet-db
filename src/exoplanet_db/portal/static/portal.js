@@ -125,6 +125,7 @@ const SOURCE_LABELS = {
   exofop_ctoi: ['ExoFOP-TESS', 'community TOIs', 'https://exofop.ipac.caltech.edu/tess/view_ctoi.php'],
   'eumemic/exoplanets': ['eumemic/exoplanets', 'TESS candidates', 'https://github.com/eumemic/exoplanets'],
   'git:brahle/exoplanet-candidates': ['brahle/exoplanet-candidates', 'evidence dossiers', 'https://github.com/brahle/exoplanet-candidates'],
+  'eumemic/exoplanets:vetting': ['eumemic/exoplanets', 'vetting results on known signals', 'https://github.com/eumemic/exoplanets/tree/main/results_public'],
 };
 
 function renderSourceStrip(sources) {

@@ -56,3 +56,47 @@ def test_dossier_and_contradictions_stay_in_range():
         )
     )
     assert value == 1  # clamped, never 0 unless classified false positive
+
+
+def test_eumemic_discard_lowers_score_and_is_not_support():
+    # Our dossier signal that eumemic investigated and called a likely nearby false positive
+    e = Evidence(
+        disposition="false_positive",
+        sources={"git:brahle/exoplanet-candidates", "eumemic/exoplanets"},
+        eumemic_discards={"LIKELY NEARBY FP": ""},
+    )
+    value, factors = score(e)
+    assert value == 1  # 20 - 30, clamped; not the hard 0 of a confirmed false positive
+    labels = [f["label"] for f in factors]
+    assert any("nearby star" in label for label in labels)
+    assert not any("independent" in label for label in labels)
+
+    # A TOI candidate keeps its TOI base; the discard and failed vetting are penalties
+    toi = Evidence(
+        disposition="planet_candidate",
+        sources={"nasa_toi", "eumemic/exoplanets", "eumemic/exoplanets:vetting"},
+        toi_dispositions={"PC"},
+        eumemic_discards={"C": "grazing"},
+        vetting_fails={"odd-even transit differences"},
+    )
+    value, factors = score(toi)
+    assert value == 60 - 15 - 10
+    assert any(f["label"].endswith("(grazing)") for f in factors)
+
+    # Counted in any release outweighs a discard elsewhere
+    counted = Evidence(
+        disposition="planet_candidate",
+        sources={"eumemic/exoplanets"},
+        eumemic_tiers={"B"},
+        eumemic_discards={"C": "MES < 10"},
+    )
+    assert score(counted)[0] == 45
+
+
+def test_eumemic_only_discard_has_its_own_base():
+    e = Evidence(
+        disposition="unclassified_transit_like_signal",
+        sources={"eumemic/exoplanets"},
+        eumemic_discards={"L": ""},
+    )
+    assert score(e)[0] == 20

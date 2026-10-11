@@ -30,6 +30,10 @@ logger = logging.getLogger(__name__)
 SOURCE_RANK = {"nasa_pscomppars": 0, "nasa_toi": 1, "exofop_ctoi": 2, "eumemic/exoplanets": 3}
 
 
+# Attached to existing signals as evidence; never names, creates or separates signals
+EVIDENCE_ONLY_SOURCES = {"eumemic/exoplanets:vetting"}
+
+
 def source_rank(source_name: str) -> int:
     return SOURCE_RANK.get(source_name, 4)
 
@@ -53,8 +57,11 @@ class _Sig:
 
 
 def _compatible(a: _Sig, b: _Sig) -> bool:
-    """False when one catalogue lists both under different identifiers."""
-    for source in a.keys.keys() & b.keys.keys():
+    """False when one catalogue lists both under different identifiers.
+
+    Evidence-only sources (eumemic's vetting tables) assert nothing about identity.
+    """
+    for source in a.keys.keys() & b.keys.keys() - EVIDENCE_ONLY_SOURCES:
         if a.keys[source] != b.keys[source]:
             return False
     return True

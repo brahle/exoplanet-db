@@ -306,11 +306,16 @@
 
         <h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--accent-cyan);">Available MCP Tools</h3>
         <ul style="padding-left: 1.5rem; margin-bottom: 1.5rem; color: var(--text-primary); line-height: 1.8;">
-          <li><code>lookup_target(identifier)</code> — Resolves host stars by TIC ID, Gaia DR3 ID, or primary star name (e.g. 'WASP-12' or '464547401').</li>
-          <li><code>search_signals(disposition, min_period_d, max_period_d, min_depth_ppm, limit)</code> — Structured query over catalog signals.</li>
-          <li><code>get_candidate_dossier(candidate_id)</code> — Full candidate dossier including ephemeris fits, timing consistency, localisation status, and scientific limits.</li>
-          <li><code>check_novelty(ra_deg, dec_deg, period_d, epoch_bjd, depth_ppm)</code> — Evaluates proposed signals against catalog records with evidentiary snapshots. Strictly avoids subjective booleans.</li>
-          <li><code>get_catalog_stats()</code> — Live summary metrics of total planets, candidates, and host stellar systems.</li>
+          <li><code>lookup_target(identifier, format)</code> — Substring search for host stars by name, TIC ID or Gaia DR3 ID, with all their signals.</li>
+          <li><code>resolve_targets(identifiers[], format)</code> — Batch: exact lookup of up to 500 TIC / Gaia ids, star or signal names, TOI or CTOI keys and TOI hosts in one call.</li>
+          <li><code>search_signals(search, source[], disposition[], period / depth / duration / score ranges, localisation[], timing[], sort, limit, offset, format)</code> — Filter catalogued signals; up to 500 per page.</li>
+          <li><code>get_candidates(ids[], format)</code> — Batch: up to 500 candidates by id or 12-character id prefix in one call.</li>
+          <li><code>get_candidate_dossier(candidate_id)</code> — One candidate in full: ephemeris with uncertainties, host star, planet score with its factors, localisation, timing, limits and every source with a link.</li>
+          <li><code>check_novelty(ra_deg, dec_deg, period_d, …, format)</code> — Evidence against every indexed catalogue (cone + period and harmonic matches), never a boolean.</li>
+          <li><code>check_novelty_bulk(signals[], …, format)</code> — Batch: novelty evidence for up to 200 signals, with the checked sources reported once.</li>
+          <li><code>get_observation_queue(lat, lon, start, end, source[], min_planet_score, altitude / twilight / Moon limits, format)</code> — Observable transits from a site over up to 7 days, best first.</li>
+          <li><code>get_catalog_stats()</code> — Live counts per source and disposition.</li>
+          <li><code>format="compact"</code> (default for the batch tools) returns tables (<code>{"cols": [...], "rows": [[...]]}</code>) with short ids and codes, about 4× fewer tokens than <code>format="full"</code>.</li>
         </ul>
 
         <h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--accent-cyan);">MCP Connection Options</h3>
@@ -405,7 +410,7 @@ pip install git+https://github.com/brahle/exoplanet-db.git
         <strong>Community Dataset Attribution:</strong> Planetary candidate and community dossiers incorporate data from <em>eumemic/exoplanets</em> and ExoFOP TOI/CTOI registries, distributed under the <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">Creative Commons Attribution 4.0 International (CC BY 4.0)</a> license.
       </div>
       <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 0.5rem; font-size: 0.75rem; color: var(--text-muted);">
-        <span>Exoplanet DB v0.1.26 — Homelab Instance (marica)</span>
+        <span>Exoplanet DB v0.1.27 — Homelab Instance (marica)</span>
         <span>Software released under the MIT License</span>
       </div>
     </div>

@@ -20,6 +20,17 @@ from exoplanet_db.models import Report, Signal, Target
 R_SUN_IN_R_EARTH = 109.076
 
 EUMEMIC_TIER_BASE = {"A": 55, "B": 45, "N": 35, "L1": 30}
+# Signals eumemic investigated and did not count: (penalty, why)
+EUMEMIC_DISCARD = {
+    "LIKELY EB": (-40, "eumemic/exoplanets: likely eclipsing binary"),
+    "LIKELY NEARBY FP": (-30, "eumemic/exoplanets: likely false positive from a nearby star"),
+    "LIKELY FALSE ALARM": (-30, "eumemic/exoplanets: likely false alarm"),
+    "C": (-15, "eumemic/exoplanets: tier C, not counted"),
+    "L": (-10, "eumemic/exoplanets: tier L, not counted"),
+    "UNTIERED": (-10, "eumemic/exoplanets: listed but not counted (neighbour within 15\u2033)"),
+    "REPORTED": (0, "eumemic/exoplanets: already reported elsewhere"),
+}
+VETTING_SOURCE = "eumemic/exoplanets:vetting"
 
 
 @dataclass
@@ -27,7 +38,9 @@ class Evidence:
     disposition: str
     sources: set[str] = field(default_factory=set)
     toi_dispositions: set[str] = field(default_factory=set)  # TFOPWG codes: PC, APC, CP, KP, FP, FA
-    eumemic_tiers: set[str] = field(default_factory=set)
+    eumemic_tiers: set[str] = field(default_factory=set)  # counted tiers only
+    eumemic_discards: dict[str, str] = field(default_factory=dict)  # tier -> reason
+    vetting_fails: set[str] = field(default_factory=set)  # failed LEO-Vetter tests
     eumemic_fpp: float | None = None
     ctoi_dispositions: set[str] = field(default_factory=set)
     localisation: str = "unresolved"
@@ -52,7 +65,9 @@ def score(e: Evidence) -> tuple[int, list[dict[str, Any]]]:
         return 100, [_factor("Confirmed planet in the NASA Exoplanet Archive", 100)]
     if e.toi_dispositions & {"CP", "KP"}:
         return 95, [_factor("TFOPWG lists it as a confirmed or known planet", 95)]
-    if e.disposition == "false_positive" or e.toi_dispositions & {"FP", "FA"}:
+    if e.toi_dispositions & {"FP", "FA"} or (
+        e.disposition == "false_positive" and not e.eumemic_discards
+    ):
         return 0, [_factor("Classified as a false positive or false alarm", 0)]
 
     if e.toi_dispositions & {"PC"}:
@@ -66,15 +81,23 @@ def score(e: Evidence) -> tuple[int, list[dict[str, Any]]]:
         base, label = 40, "ExoFOP community TOI"
     elif any(s.startswith("git:") for s in e.sources):
         base, label = 20, "Provisional transit-like signal (unvetted dossier)"
+    elif e.eumemic_discards:
+        base, label = 30, "Transit-like signal documented by eumemic/exoplanets"
     else:
         base, label = 30, "Catalogued candidate"
     factors.append(_factor(label, base))
     total = base
 
     # 2. Independent support
+    # A catalogue that examined the signal and discarded it is not support
+    supporting = {
+        s
+        for s in e.sources
+        if s != VETTING_SOURCE and not (s == "eumemic/exoplanets" and not e.eumemic_tiers)
+    }
     independent = len(
-        {s for s in e.sources if not s.startswith("git:")}
-        | ({"git"} if any(s.startswith("git:") for s in e.sources) else set())
+        {s for s in supporting if not s.startswith("git:")}
+        | ({"git"} if any(s.startswith("git:") for s in supporting) else set())
     )
     if independent > 1:
         bonus = min(10, 5 * (independent - 1))
@@ -95,7 +118,24 @@ def score(e: Evidence) -> tuple[int, list[dict[str, Any]]]:
             factors.append(_factor(f"TRICERATOPS FPP {e.eumemic_fpp:.2f}", -15))
             total -= 15
 
-    # 4. Red flags from the transit itself
+    # 4. Investigated and discarded elsewhere (counted in any eumemic release outweighs this)
+    if not e.eumemic_tiers:
+        for tier, reason in sorted(e.eumemic_discards.items()):
+            delta, label = EUMEMIC_DISCARD.get(tier, (-10, f"eumemic/exoplanets: tier {tier}, not counted"))
+            if reason:
+                label = f"{label} ({reason})"
+            factors.append(_factor(label, delta))
+            total += delta
+    if e.vetting_fails:
+        factors.append(
+            _factor(
+                "eumemic/exoplanets automated vetting failed: " + "; ".join(sorted(e.vetting_fails)),
+                -10,
+            )
+        )
+        total -= 10
+
+    # 5. Red flags from the transit itself
     radius = e.published_radius_earth
     if radius is None and e.depth_ppm and e.star_radius_rsun and 0 < e.depth_ppm < 1e6:
         radius = e.star_radius_rsun * math.sqrt(e.depth_ppm / 1e6) * R_SUN_IN_R_EARTH
@@ -188,9 +228,12 @@ async def score_signals(session: AsyncSession) -> dict[str, int]:
                 e.toi_dispositions.add(code)
         elif source == "eumemic/exoplanets":
             tier = str(raw.get("tier") or "").strip().upper()
-            if tier:
+            if tier in EUMEMIC_TIER_BASE:
                 e.eumemic_tiers.add(tier)
-            for key in ("FPP", "FPP_c"):
+            elif tier:
+                e.eumemic_discards[tier] = str(raw.get("c_reason") or "").strip()
+            # A discarded row's FPP is already the reason it was discarded (tier C)
+            for key in ("FPP", "FPP_c") if tier in EUMEMIC_TIER_BASE else ():
                 try:
                     fpp = float(raw.get(key))
                 except (TypeError, ValueError):
@@ -198,6 +241,8 @@ async def score_signals(session: AsyncSession) -> dict[str, int]:
                 if not math.isnan(fpp):
                     e.eumemic_fpp = fpp if e.eumemic_fpp is None else min(e.eumemic_fpp, fpp)
                     break
+        elif source == VETTING_SOURCE:
+            e.vetting_fails.update(raw.get("fails") or [])
         elif source == "exofop_ctoi":
             e.ctoi_dispositions.add((reported or "PC").upper())
         elif source == "nasa_pscomppars":

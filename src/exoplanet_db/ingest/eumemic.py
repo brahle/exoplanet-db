@@ -36,6 +36,32 @@ class EumemicIngest:
 
     def __init__(self, session: AsyncSession):
         self.session = session
+        self._touched: set[str] = set()
+        self._best: dict[str, str] = {}
+
+    async def _settle_disposition(self, signal: Signal, disposition: str) -> None:
+        """eumemic sets the disposition only of signals no NASA or ExoFOP table reports.
+
+        It outranks our own unvetted dossiers (their investigation is the reason to ingest
+        discarded signals at all). Within one run the most favourable eumemic verdict wins, so a
+        signal counted in one release and dropped in another stays a candidate.
+        """
+        best = self._best.get(signal.id)
+        if best is not None and DISPOSITION_ORDER[best] <= DISPOSITION_ORDER[disposition]:
+            return
+        self._best[signal.id] = disposition
+        stronger = (
+            await self.session.execute(
+                select(Report.id)
+                .where(
+                    Report.signal_id == signal.id,
+                    Report.source_name.in_(("nasa_pscomppars", "nasa_toi", "exofop_ctoi")),
+                )
+                .limit(1)
+            )
+        ).first()
+        if stronger is None:
+            signal.current_disposition = disposition
 
     def parse_candidates_csv(self, csv_content: str) -> list[dict[str, Any]]:
         """Parses eumemic candidates.csv into typed dictionaries."""
@@ -153,19 +179,24 @@ class EumemicIngest:
                 duration_h=r["duration_h"],
             )
 
-            # Tiers A, B, N (crowded field) and L1 (low SNR) are all published planet candidates;
-            # rows in other tiers are filtered out before ingest (see PUBLISHED_TIERS).
-            tier_disposition = "planet_candidate"
-
-            limits = [
-                f"eumemic/exoplanets tier {r['tier']} candidate ({source_file})",
-                "TESS-only vetting; ground-based follow-up needed to confirm or reject.",
-            ]
+            tier_disposition, verdict = tier_verdict(r["tier"], r["raw"].get("c_reason"))
+            if r["tier"] in COUNTED_TIERS:
+                limits = [
+                    f"eumemic/exoplanets tier {r['tier']} candidate ({source_file})",
+                    "TESS-only vetting; ground-based follow-up needed to confirm or reject.",
+                ]
+            else:
+                limits = [f"eumemic/exoplanets: {verdict} ({source_file})"]
 
             if matched_signal:
                 signal = matched_signal
-                # Update limits
-                signal.scientific_limits = list(set((signal.scientific_limits or []) + limits))
+                previous = signal.scientific_limits or []
+                if signal.id not in self._touched:
+                    # Drop the previous run's eumemic verdicts, so a re-tiered signal shows the
+                    # current one only
+                    previous = [x for x in previous if not x.startswith("eumemic/exoplanets")]
+                signal.scientific_limits = list(dict.fromkeys(previous + limits))
+                await self._settle_disposition(signal, tier_disposition)
             else:
                 signal = Signal(
                     target_id=target.id,
@@ -182,6 +213,8 @@ class EumemicIngest:
                 )
                 self.session.add(signal)
                 await self.session.flush()
+                self._best[signal.id] = tier_disposition
+            self._touched.add(signal.id)
 
             # Report
             report = Report(
@@ -243,7 +276,50 @@ class EumemicIngest:
         return count
 
 
-PUBLISHED_TIERS = {"A", "B", "N", "L1"}
+# Tiers A, B, N (crowded field) and L1 (low SNR) are eumemic's counted planet candidates.
+COUNTED_TIERS = {"A", "B", "N", "L1"}
+PUBLISHED_TIERS = COUNTED_TIERS  # kept for callers of the old name
+# Everything else eumemic documents but does not count: (disposition, what it means)
+DISCARDED_TIERS = {
+    "C": ("unclassified_transit_like_signal", "tier C, listed but not counted"),
+    "L": (
+        "unclassified_transit_like_signal",
+        "tier L, passes the false-alarm classifier but not the binary, grazing, literature "
+        "and TRICERATOPS checks; not counted",
+    ),
+    "LIKELY EB": ("false_positive", "likely eclipsing binary; not counted"),
+    "LIKELY NEARBY FP": (
+        "false_positive",
+        "likely false positive from a nearby star (centroid offset or a neighbour that can "
+        "produce the dip); not counted",
+    ),
+    "LIKELY FALSE ALARM": ("false_positive", "likely false alarm (systematics); not counted"),
+    "REPORTED": (
+        "unclassified_transit_like_signal",
+        "already reported elsewhere (literature or Zenodo); not counted",
+    ),
+    "UNTIERED": (
+        "unclassified_transit_like_signal",
+        "listed in an earlier release but not tiered (passes everything except the check for a "
+        "TIC star within 15\u2033 that could produce the dip); not counted",
+    ),
+}
+DISPOSITION_ORDER = {
+    "planet_candidate": 0,
+    "unclassified_transit_like_signal": 1,
+    "false_positive": 2,
+}
+
+
+def tier_verdict(tier: str, reason: str | None = None) -> tuple[str, str]:
+    """(disposition, human-readable verdict) for an eumemic tier."""
+    if tier in COUNTED_TIERS:
+        return "planet_candidate", f"tier {tier} candidate"
+    disposition, verdict = DISCARDED_TIERS.get(
+        tier, ("unclassified_transit_like_signal", f"tier {tier}; not counted")
+    )
+    reason = (reason or "").strip()
+    return disposition, f"{verdict} ({reason})" if reason else verdict
 EUMEMIC_REPO = "eumemic/exoplanets"
 ALLSKY_FILE = "results_public/candidates_allsky.csv"
 EARLIER_TIERS_FILE = "results_public/tiers_earlier_candidates.csv"
@@ -267,9 +343,11 @@ def _earlier_tier(tiers: list[dict[str, str]], tic: str, period: float) -> str |
 async def fetch_eumemic_candidates(sha: str) -> list[tuple[str, list[dict[str, Any]]]]:
     """The published candidate list at commit `sha`, as (source_file, records) pairs.
 
-    - candidates_allsky.csv: the full-sky release; keep tiers A, B, N, L1.
+    Every documented row, counted or not: discarded signals carry eumemic's verdict.
+    - candidates_allsky.csv: the full-sky release with its tier for every row (A, B, N, L1
+      counted; C, L, likely EB / nearby FP / false alarm, reported elsewhere not).
     - candidates.csv and candidates_<date>.csv: earlier releases, re-tiered in
-      tiers_earlier_candidates.csv; keep the rows that are still tier A or B.
+      tiers_earlier_candidates.csv; rows it does not list are "untiered".
     """
     import httpx
 
@@ -297,17 +375,16 @@ async def fetch_eumemic_candidates(sha: str) -> list[tuple[str, list[dict[str, A
         allsky_all = parser.parse_candidates_csv(await get(ALLSKY_FILE))
         if not allsky_all:
             raise ValueError(f"{ALLSKY_FILE} at {sha} parsed to 0 rows")
-        allsky = [r for r in allsky_all if r["tier"] in PUBLISHED_TIERS]
-        out.append((ALLSKY_FILE, allsky))
+        for r in allsky_all:
+            r["tier"] = r["tier"] or "UNTIERED"
+        out.append((ALLSKY_FILE, allsky_all))
 
         tiers = list(csv.DictReader(io.StringIO((await get(EARLIER_TIERS_FILE)).strip())))
         for path in earlier_files:
             kept = []
             for r in parser.parse_candidates_csv(await get(path)):
-                tier = _earlier_tier(tiers, r["tic"], r["period_d"])
-                if tier in ("A", "B"):
-                    r["tier"] = tier
-                    kept.append(r)
+                r["tier"] = _earlier_tier(tiers, r["tic"], r["period_d"]) or "UNTIERED"
+                kept.append(r)
             out.append((path, kept))
     return out
 
@@ -342,5 +419,169 @@ async def fetch_and_ingest_eumemic(session: AsyncSession) -> int:
         )
     )
     await session.commit()
-    logger.info("eumemic/exoplanets @ %s: %d published candidates", sha[:8], total)
+    logger.info("eumemic/exoplanets @ %s: %d documented signals", sha[:8], total)
     return total
+
+
+VETTING_SOURCE = "eumemic/exoplanets:vetting"
+VETTING_PREFIX = "results_public/vetted_signals"
+
+
+def parse_vetting_rows(csv_text: str, stem: str) -> list[dict[str, Any]]:
+    """Rows of a vetted_signals*.csv: every signal eumemic's search put through LEO-Vetter."""
+    rows = []
+    for r in csv.DictReader(io.StringIO(csv_text)):
+        tic = (r.get("tic") or "").strip()
+        period, t0 = _num(r.get("period")), _num(r.get("t0"))
+        if not tic or not period or period <= 0 or t0 is None:
+            continue
+        fails = [f.strip() for f in (r.get("fails") or "").split(";") if f.strip()]
+        rows.append(
+            {
+                "tic": tic,
+                "period_d": period,
+                "epoch_bjd": t0 + 2457000.0 if t0 < 2400000 else t0,  # BTJD -> BJD_TDB
+                "duration_h": _num(r.get("duration_h")),
+                "depth_ppm": _num(r.get("depth_ppm")),
+                "fails": fails,
+                "source_key": f"{stem}:TIC{tic}_P{period:.4f}",
+                "raw": {
+                    "file": stem,
+                    "fails": fails,
+                    "n_fail": len(fails),
+                    **{
+                        k: r.get(k)
+                        for k in ("rank", "MES", "snr", "rp", "method", "known_status", "known_detail")
+                    },
+                },
+            }
+        )
+    return rows
+
+
+async def attach_vetting_evidence(session: AsyncSession) -> dict[str, int]:
+    """Attach eumemic's per-signal vetting results to signals already in the catalogue.
+
+    The vetted_signals tables list ~18k automated detections, most of them noise, so they never
+    create signals: a row only becomes a report on an existing signal of the same star and
+    period, recording that eumemic examined it and which LEO-Vetter tests it failed. Runs after
+    de-duplication so evidence lands on the merged signals.
+    """
+    import gzip
+
+    import httpx
+
+    from exoplanet_db.ingest.common import github_head_sha
+
+    sha = await github_head_sha(EUMEMIC_REPO)
+    raw_base = f"https://raw.githubusercontent.com/{EUMEMIC_REPO}/{sha}/"
+    async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
+        listing = await client.get(
+            f"https://api.github.com/repos/{EUMEMIC_REPO}/contents/results_public",
+            params={"ref": sha},
+        )
+        listing.raise_for_status()
+        paths = sorted(
+            f"results_public/{e['name']}"
+            for e in listing.json()
+            if e.get("type") == "file"
+            and f"results_public/{e['name']}".startswith(VETTING_PREFIX)
+            and e["name"].endswith(".csv.gz")
+        )
+        rows: list[dict[str, Any]] = []
+        for path in paths:
+            resp = await client.get(raw_base + path)
+            resp.raise_for_status()
+            stem = path.rsplit("/", 1)[1].removesuffix(".csv.gz")
+            rows.extend(parse_vetting_rows(gzip.decompress(resp.content).decode(), stem))
+    if not rows:
+        raise ValueError(f"no vetted_signals rows at {sha}")
+    return await attach_vetting_rows(session, rows, sha, [p.rsplit("/", 1)[1] for p in paths])
+
+
+async def attach_vetting_rows(
+    session: AsyncSession, rows: list[dict[str, Any]], sha: str, files: list[str]
+) -> dict[str, int]:
+    tics = sorted({r["tic"] for r in rows})
+    targets: dict[str, str] = {}
+    for i in range(0, len(tics), 1000):
+        for tic_id, tid in (
+            await session.execute(
+                select(Target.tic_id, Target.id).where(Target.tic_id.in_(tics[i : i + 1000]))
+            )
+        ).all():
+            targets.setdefault(tic_id, tid)
+    signals_by_target: dict[str, list[Signal]] = {}
+    target_ids = sorted(set(targets.values()))
+    for i in range(0, len(target_ids), 1000):
+        for sig in (
+            await session.execute(
+                select(Signal).where(Signal.target_id.in_(target_ids[i : i + 1000]))
+            )
+        ).scalars():
+            signals_by_target.setdefault(sig.target_id, []).append(sig)
+
+    now = datetime.now(UTC)
+    attached = failed = 0
+    for r in rows:
+        tid = targets.get(r["tic"])
+        if tid is None:
+            continue
+        signal = match_signal_to_existing(
+            existing_signals=signals_by_target.get(tid, []),
+            cand_period=r["period_d"],
+            cand_epoch=r["epoch_bjd"],
+            duration_h=r["duration_h"],
+        )
+        if signal is None:
+            continue
+        await upsert_report(
+            session,
+            Report(
+                target_id=tid,
+                signal_id=signal.id,
+                source_name=VETTING_SOURCE,
+                source_key=r["source_key"],
+                retrieval_utc=now,
+                commit_sha=sha,
+                author_or_team="eumemic",
+                bibcode_or_url=f"https://github.com/{EUMEMIC_REPO}/blob/{sha}/results_public/{r['raw']['file']}.csv.gz",
+                reported_disposition="unclassified_transit_like_signal",
+                period_d=r["period_d"],
+                epoch_bjd=r["epoch_bjd"],
+                duration_h=r["duration_h"],
+                depth_ppm=r["depth_ppm"],
+                raw_payload=r["raw"],
+                license="CC BY 4.0",
+            ),
+        )
+        if signal.current_disposition not in ("confirmed_planet", "validated_planet"):
+            verdict = (
+                "failed " + "; ".join(r["fails"])
+                if r["fails"]
+                else "passed, but not promoted to a candidate"
+            )
+            line = f"eumemic/exoplanets automated vetting ({r['raw']['file']}): {verdict}"
+            if line not in (signal.scientific_limits or []):
+                signal.scientific_limits = [*(signal.scientific_limits or []), line]
+        attached += 1
+        failed += bool(r["fails"])
+    session.add(
+        PublishedSnapshot(
+            source_name=VETTING_SOURCE,
+            snapshot_utc=now,
+            commit_sha=sha,
+            record_count=attached,
+            status="validated",
+            validation_metrics={
+                "files": files,
+                "rows": len(rows),
+                "attached": attached,
+                "attached_with_failed_tests": failed,
+                "license": "CC BY 4.0",
+            },
+            published_at=now,
+        )
+    )
+    await session.commit()
+    return {"rows": len(rows), "attached": attached, "with_failed_tests": failed}

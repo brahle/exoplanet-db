@@ -168,7 +168,7 @@ async def run_ingest(source: str = "all", limit: int | None = None) -> list[str]
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
     from exoplanet_db.ingest.common import enrich_tic_targets, prune_orphan_signals
-    from exoplanet_db.ingest.eumemic import fetch_and_ingest_eumemic
+    from exoplanet_db.ingest.eumemic import attach_vetting_evidence, fetch_and_ingest_eumemic
     from exoplanet_db.ingest.exofop import fetch_and_ingest_ctois
     from exoplanet_db.ingest.git_dossier import fetch_and_ingest_github_dossiers
     from exoplanet_db.ingest.runner import IngestionRunner
@@ -202,7 +202,7 @@ async def run_ingest(source: str = "all", limit: int | None = None) -> list[str]
         return f"{len(rows)} rows fetched, {snap.record_count} ingested"
 
     async def eumemic(session):
-        return f"{await fetch_and_ingest_eumemic(session)} published candidates"
+        return f"{await fetch_and_ingest_eumemic(session)} documented signals (counted or not)"
 
     async def ctoi(session):
         return f"{await fetch_and_ingest_ctois(session)} CTOIs"
@@ -245,6 +245,16 @@ async def run_ingest(source: str = "all", limit: int | None = None) -> list[str]
         except Exception as exc:
             failed.append("prune")
             print(f"[prune] FAILED: {exc!r}", flush=True)
+
+    if "eumemic" in selected:
+        # After dedup, so per-signal vetting evidence lands on the merged signals
+        async with session_factory() as session:
+            try:
+                print(f"[eumemic-vetting] {await attach_vetting_evidence(session)}", flush=True)
+            except Exception as exc:
+                await session.rollback()
+                failed.append("eumemic-vetting")
+                print(f"[eumemic-vetting] FAILED: {exc!r}", flush=True)
 
     async with session_factory() as session:
         try:
