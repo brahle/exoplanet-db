@@ -1,17 +1,21 @@
-"""Novelty evidence: catalogued signals near a position at the same period or a harmonic.
+"""Novelty evidence: catalogued signals, eclipsing binaries and variable stars near a
+position at the same period or a harmonic.
 
-Shared by the MCP tools and the REST batch endpoint. Never returns a boolean verdict.
+Shared by the MCP tools and the REST endpoints. Never returns a boolean verdict.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+from exoplanet_db.services import variables
 from exoplanet_db.services.catalog import CatalogService
 
 HARMONIC_RATIOS = (0.25, 1 / 3, 0.5, 2.0, 3.0, 4.0)
 SAME_STAR_ARCSEC = 2.5
 MAX_CONE_ARCSEC = 3600.0
+# A TESS pixel is 21 arcsec and contaminating light reaches about 2 arcmin
+DEFAULT_CONE_ARCSEC = 120.0
 KNOWN_UNINDEXED_SOURCES = [
     "arxiv_astro_ph_ep_recent_preprints",
     "zenodo_community_unregistered_dossiers",
@@ -111,13 +115,35 @@ def evidence(
     period_d: float,
     period_tolerance_percent: float,
     harmonic_tolerance_percent: float,
+    variable_matches: list[dict[str, Any]] | None = None,
+    variable_stars_searched: int = 0,
 ) -> dict[str, Any]:
+    """status: near_matches_found (a catalogued signal), else variable_star_match (an
+    eclipsing binary / variable at the period, or an eclipsing binary on the same star),
+    else no_match_in_checked_sources."""
     near = near_matches(items, period_d, period_tolerance_percent, harmonic_tolerance_percent)
+    variable_matches = variable_matches or []
+    status = (
+        "near_matches_found"
+        if near
+        else "variable_star_match"
+        if variable_matches
+        else "no_match_in_checked_sources"
+    )
     return {
-        "status": "near_matches_found" if near else "no_match_in_checked_sources",
+        "status": status,
         "cone_targets_searched": len(items),
         "near_matches": near,
+        "variable_stars_searched": variable_stars_searched,
+        "variable_matches": variable_matches,
     }
+
+
+async def checked_sources(service: CatalogService) -> list[dict[str, Any]]:
+    """Signal catalogues and the variable-star catalogues, each with its coverage."""
+    return serialise_sources(
+        await service.get_source_status() + await variables.catalogue_status(service.session)
+    )
 
 
 def serialise_sources(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -135,7 +161,7 @@ def serialise_sources(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
 async def check_many(
     service: CatalogService,
     queries: list[dict[str, Any]],
-    cone_radius_arcsec: float = 30.0,
+    cone_radius_arcsec: float = DEFAULT_CONE_ARCSEC,
     period_tolerance_percent: float = 1.0,
     harmonic_tolerance_percent: float = 1.0,
 ) -> dict[str, Any]:
@@ -152,12 +178,23 @@ async def check_many(
         if not period or period <= 0:
             results.append({"label": label, "error": "period_d must be positive"})
             continue
-        ra = float(q["ra_deg"]) % 360.0
-        items = cone_items_from_db(await service.cone_search(ra, float(q["dec_deg"]), radius))
+        ra, dec = float(q["ra_deg"]) % 360.0, float(q["dec_deg"])
+        items = cone_items_from_db(await service.cone_search(ra, dec, radius))
+        var_hits = await variables.cone(service.session, ra, dec, radius)
+        var_matches = variables.match(
+            var_hits, period, period_tolerance_percent, harmonic_tolerance_percent
+        )
         results.append(
             {
                 "label": label,
-                **evidence(items, period, period_tolerance_percent, harmonic_tolerance_percent),
+                **evidence(
+                    items,
+                    period,
+                    period_tolerance_percent,
+                    harmonic_tolerance_percent,
+                    var_matches,
+                    len(var_hits),
+                ),
             }
         )
     return {
@@ -166,7 +203,7 @@ async def check_many(
             "period_tolerance_percent": period_tolerance_percent,
             "harmonic_tolerance_percent": harmonic_tolerance_percent,
         },
-        "checked_sources": serialise_sources(await service.get_source_status()),
+        "checked_sources": await checked_sources(service),
         "known_unindexed_sources": KNOWN_UNINDEXED_SOURCES,
         "epistemic_warning": NOVELTY_WARNING,
         "results": results,

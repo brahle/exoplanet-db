@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 import exoplanet_db.api.app as api_module
 import exoplanet_db.mcp.server as mcp_module
 from exoplanet_db.models import Base
-from exoplanet_db.models.entities import Report, Signal, Target
+from exoplanet_db.models.entities import Report, Signal, Target, VariableStar
 
 # Two ids sharing an 8-char prefix (ambiguous) but not a 12-char one
 ID_A = "aaaaaaaa-0000-4000-8000-000000000001"
@@ -102,6 +102,20 @@ async def catalogue(request, monkeypatch):
             source="eumemic/exoplanets",
             key="3003_7.5",
         )
+        # A Gaia eclipsing binary 36" from an otherwise empty field, at twice 4.0 d
+        s.add(
+            VariableStar(
+                catalogue="gaia_dr3_eb",
+                source_id="999",
+                name="Gaia DR3 999",
+                ra_deg=300.01,
+                dec_deg=0.0,
+                period_d=8.0,
+                var_type="EB",
+                mag=15.2,
+                mag_band="G",
+            )
+        )
         await s.commit()
 
     mcp_module.AsyncSessionLocal = factory
@@ -185,6 +199,10 @@ async def test_resolve_targets_identifier_kinds(catalogue):
     assert by["wasp 12"] == ("name", ["t2"])
     assert by["WASP-12 b"] == ("signal_name", ["t2"])
     assert by["3003_7.5"] == ("source_key", ["t3"])
+    ids = {r["query"]: r["signal_ids"] for r in res["resolved"]}
+    # star-level matches list the star's signals; signal-level ones only that signal
+    assert ids["TIC 1001"] == [ID_A] and ids["wasp 12"] == [ID_B] and ids["TOI-1001"] == [ID_A]
+    assert ids["WASP-12 b"] == [ID_B]
     assert res["not_found"] == ["nothing-here"]
     # every host once
     assert sorted(t["id"] for t in res["targets"]) == ["t1", "t2", "t3"]
@@ -204,7 +222,7 @@ async def test_check_novelty_bulk(catalogue):
         [
             {"ra_deg": 10.0, "dec_deg": 20.0, "period_d": 6.0, "label": "alias"},
             {"ra_deg": 97.6, "dec_deg": 29.7, "period_d": 1.09142},
-            {"ra_deg": 300.0, "dec_deg": 0.0, "period_d": 4.0, "label": "empty"},
+            {"ra_deg": 300.0, "dec_deg": 0.0, "period_d": 4.0, "label": "eb"},
             {"ra_deg": 0.0, "dec_deg": 0.0, "period_d": 0.0, "label": "bad"},
         ],
         format="full",
@@ -213,21 +231,38 @@ async def test_check_novelty_bulk(catalogue):
     assert status == {
         "alias": "near_matches_found",
         "1": "near_matches_found",
-        "empty": "no_match_in_checked_sources",
+        "eb": "variable_star_match",
         "bad": "period_d must be positive",
     }
     assert res["results"][0]["near_matches"][0]["match_reason"] == "harmonic_alias"
+    eb = res["results"][2]["variable_matches"][0]
+    assert eb["catalogue"] == "gaia_dr3_eb" and eb["eclipsing"] and eb["period_ratio"] == 2.0
+    assert eb["match_reason"] == "variable_harmonic" and 35 < eb["separation_arcsec"] < 37
+    assert res["query"]["cone_radius_arcsec"] == 120.0
     assert {s["source_name"] for s in res["checked_sources"]} == {
         "nasa_toi",
         "nasa_pscomppars",
         "eumemic/exoplanets",
+        "variables:gaia_dr3_eb",
     }
     assert "epistemic_warning" in res
+
+    # the binary is 36" away: the old 30" default would have called this field empty
+    narrow = await mcp_module.check_novelty_bulk(
+        [{"ra_deg": 300.0, "dec_deg": 0.0, "period_d": 4.0}], cone_radius_arcsec=30, format="full"
+    )
+    assert narrow["results"][0]["status"] == "no_match_in_checked_sources"
+
+    single = await mcp_module.check_novelty(300.0, 0.0, 4.0, format="compact")
+    assert single["status"] == "variable_star_match"
+    var = dict(zip(single["var"]["cols"], single["var"]["rows"][0]))
+    assert var["cat"] == "geb" and var["match"] == "H" and var["eb"] == 1
+    assert single["legend"]["vcat"] == {"geb": "gaia_dr3_eb"}
 
     compact = await mcp_module.check_novelty_bulk(
         [{"ra_deg": 10.0, "dec_deg": 20.0, "period_d": 6.0, "label": "alias"}]
     )
-    assert compact["results"]["rows"] == [["alias", "near_matches_found", 1, 1]]
+    assert compact["results"]["rows"] == [["alias", "near_matches_found", 1, 1, 0, 0]]
     near = dict(zip(compact["near"]["cols"], compact["near"]["rows"][0]))
     assert near["label"] == "alias" and near["match"] == "H" and near["ratio"] == 0.5
     assert compact["legend"]["match"] == {"H": "harmonic_alias"}

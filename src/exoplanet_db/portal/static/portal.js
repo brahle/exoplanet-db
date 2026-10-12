@@ -147,6 +147,35 @@ const VETTING_WARNINGS = {
   off_target_diagnostic: 'Difference images place the dip off the target',
 };
 
+const VARIABLE_CATALOGUES = { tess_eb: 'TESS EB', gaia_dr3_eb: 'Gaia DR3 EB', vsx: 'VSX' };
+
+function renderVariableMatches(matches) {
+  if (!matches || !matches.length) return '';
+  const rows = matches.map((m) => {
+    const kind = m.known_transit ? 'known transit' : m.eclipsing ? 'eclipsing binary' : (m.var_type || 'variable');
+    const ratio = m.period_ratio && Math.abs(m.period_ratio - 1) > 0.01 ? ` (${m.period_ratio}× this period)` : '';
+    return `<tr>
+      <td>${escapeHtml(m.name || m.source_id || '—')}</td>
+      <td>${escapeHtml(VARIABLE_CATALOGUES[m.catalogue] || m.catalogue)}</td>
+      <td>${escapeHtml(kind)}</td>
+      <td>${typeof m.separation_arcsec === 'number' ? m.separation_arcsec.toFixed(1) : '—'}″</td>
+      <td>${typeof m.catalog_period_d === 'number' ? m.catalog_period_d.toFixed(5) : '—'} d${escapeHtml(ratio)}</td>
+      <td>${typeof m.mag === 'number' ? `${m.mag.toFixed(1)} ${escapeHtml(m.mag_band || '')}` : '—'}</td>
+    </tr>`;
+  }).join('');
+  return `
+    <section class="detail-section">
+      <h4 class="detail-section-title">⚠ Catalogued variables at this period</h4>
+      <p class="detail-muted">Within 120″ of the host (a TESS pixel is 21″) at this period, twice or half of it. A binary this close can put its eclipses into the target's light curve.</p>
+      <div class="table-scroll">
+        <table class="viz-table">
+          <thead><tr><th>Star</th><th>Catalogue</th><th>Type</th><th>Separation</th><th>Period</th><th>Mag</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </section>`;
+}
+
 function renderVetting(v) {
   if (!v) return '';
   const num = (x, d) => (typeof x === 'number' ? x.toFixed(d) : '—');
@@ -726,6 +755,8 @@ function renderDossier(c) {
           </table>
         </div>` : '<p class="detail-muted">No report rows are linked to this signal.</p>'}
     </section>
+
+    ${renderVariableMatches(c.variable_matches)}
 
     ${renderVetting((c.sources || []).map((s) => s.vetting).find(Boolean))}
 

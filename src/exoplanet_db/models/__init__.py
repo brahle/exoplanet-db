@@ -8,6 +8,7 @@ from exoplanet_db.models.entities import (
     SignalHarmonic,
     SignalLineage,
     Target,
+    VariableStar,
 )
 
 __all__ = [
@@ -20,4 +21,5 @@ __all__ = [
     "EphemerisFit",
     "ReproducibilityRun",
     "PublishedSnapshot",
+    "VariableStar",
 ]

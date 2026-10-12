@@ -53,6 +53,7 @@ def signal_record(s: Signal, with_target: bool = True) -> dict[str, Any]:
         "sources": sorted({r.source_name for r in s.reports}),
         "source_keys": sorted({r.source_key for r in s.reports}),
         "limits": s.scientific_limits or [],
+        "variable_matches": s.variable_matches or [],
     }
     if with_target and s.target is not None:
         t = s.target
@@ -252,11 +253,15 @@ async def resolve_targets(session: AsyncSession, identifiers: list[str]) -> dict
     target_ids = sorted({tid for _, tids, _ in hits.values() for tid in tids})
     targets = await load_targets(session, target_ids)
 
+    signals_of = {t["id"]: [s["id"] for s in t["signals"]] for t in targets}
     resolved = []
     for q in queries:
         if q not in hits:
             continue
         how, tids, sids = hits[q]
+        if not sids:
+            # Matched a star (TIC, Gaia, name, TOI host): every signal on it
+            sids = {sid for tid in tids for sid in signals_of.get(tid, [])}
         resolved.append(
             {
                 "query": q,

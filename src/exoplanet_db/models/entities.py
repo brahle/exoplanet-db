@@ -96,6 +96,9 @@ class Signal(Base):
     # Heuristic 0-100 "how likely a real planet" score and its factors (services/planet_score.py)
     planet_score: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     score_factors: Mapped[list[dict] | None] = mapped_column(JSONType, nullable=True)
+    # Catalogued variable stars / eclipsing binaries near the host at this period or a
+    # harmonic (services/variables.py); None until cross-matched
+    variable_matches: Mapped[list[dict] | None] = mapped_column(JSONType, nullable=True)
 
     # Preferred coherent fit pointer (for scheduling)
     preferred_ephemeris_fit_id: Mapped[str | None] = mapped_column(
@@ -288,3 +291,24 @@ class PublishedSnapshot(Base):
     published_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
     )
+
+
+class VariableStar(Base):
+    """A periodic variable or eclipsing binary from an external catalogue (TESS EB, Gaia DR3
+    eclipsing binaries, VSX). Reference data for contamination checks, not signals."""
+
+    __tablename__ = "variable_stars"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    catalogue: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    source_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    ra_deg: Mapped[float] = mapped_column(Float, nullable=False)
+    dec_deg: Mapped[float] = mapped_column(Float, nullable=False)
+    period_d: Mapped[float] = mapped_column(Float, nullable=False)
+    var_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    mag: Mapped[float | None] = mapped_column(Float, nullable=True)
+    mag_band: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    epoch_bjd: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    __table_args__ = (Index("idx_variable_stars_coords", "dec_deg", "ra_deg"),)

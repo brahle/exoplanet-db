@@ -153,7 +153,7 @@ class NasaTapClient:
         return await self.execute_query(query)
 
 
-SOURCES = ("composite", "toi", "eumemic", "ctoi", "dossiers")
+SOURCES = ("composite", "toi", "eumemic", "ctoi", "dossiers", "variables")
 SOURCE_GROUPS = {"all": SOURCES, "nasa": ("composite", "toi")}
 
 
@@ -172,8 +172,10 @@ async def run_ingest(source: str = "all", limit: int | None = None) -> list[str]
     from exoplanet_db.ingest.exofop import fetch_and_ingest_ctois
     from exoplanet_db.ingest.git_dossier import fetch_and_ingest_github_dossiers
     from exoplanet_db.ingest.runner import IngestionRunner
+    from exoplanet_db.ingest.variables import refresh_catalogues
     from exoplanet_db.services.dedup import dedupe_signals
     from exoplanet_db.services.planet_score import score_signals
+    from exoplanet_db.services.variables import crossmatch_signals
 
     db_url = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///exoplanet_db.sqlite")
     if db_url.startswith("postgres://"):
@@ -210,7 +212,12 @@ async def run_ingest(source: str = "all", limit: int | None = None) -> list[str]
     async def dossiers(session):
         return f"{await fetch_and_ingest_github_dossiers(session)} dossiers"
 
+    async def variables(session):
+        # Reference catalogues: reloaded monthly, or now when asked for explicitly
+        return str(await refresh_catalogues(session, force=source == "variables"))
+
     steps = {
+        "variables": variables,
         "composite": composite,
         "toi": toi,
         "eumemic": eumemic,
@@ -262,6 +269,14 @@ async def run_ingest(source: str = "all", limit: int | None = None) -> list[str]
         except Exception as exc:
             failed.append("tic")
             print(f"[tic] FAILED: {exc!r}", flush=True)
+
+    async with session_factory() as session:
+        try:
+            print(f"[variables-xmatch] {await crossmatch_signals(session)}", flush=True)
+        except Exception as exc:
+            await session.rollback()
+            failed.append("variables-xmatch")
+            print(f"[variables-xmatch] FAILED: {exc!r}", flush=True)
 
     # Last: scores use the merged signals and the enriched stellar radii
     async with session_factory() as session:

@@ -35,7 +35,9 @@ mcp = MCPServer(
         "Read-only access to an exoplanet catalogue that merges the NASA Exoplanet Archive "
         "(confirmed planets, TOIs), ExoFOP community TOIs, eumemic/exoplanets and published "
         "candidate dossiers, de-duplicated into one record per signal with a 0-100 planet score "
-        "(heuristic, not a probability).\n"
+        "(heuristic, not a probability). Novelty checks also search TESS EB, Gaia DR3 "
+        "eclipsing-binary and VSX variable-star catalogues: a binary at the same period within "
+        "a couple of TESS pixels usually explains a dip.\n"
         "Batch tools: get_candidates (many ids), resolve_targets (many TIC/Gaia ids or names), "
         "check_novelty_bulk (many signals). Prefer them over calling a single-item tool in a loop.\n"
         'Every list tool takes format="compact" (the default for batch tools): results come as '
@@ -390,6 +392,7 @@ async def get_candidate_dossier(candidate_id: str) -> dict[str, Any]:
                     "source_localisation": signal.source_localisation_status,
                     "timing_consistency": signal.timing_consistency_status,
                     "limits": signal.scientific_limits,
+                    "variable_matches": signal.variable_matches or [],
                 },
                 "sources": [
                     {
@@ -460,6 +463,7 @@ async def get_candidate_dossier(candidate_id: str) -> dict[str, Any]:
             "source_localisation": c.get("source_localisation_status"),
             "timing_consistency": c.get("timing_consistency_status"),
             "limits": c.get("scientific_limits", []),
+            "variable_matches": c.get("variable_matches", []),
         },
         "sources": [
             {k: src.get(k) for k in ("source_name", "source_key", "url", "reported_disposition")}
@@ -470,11 +474,42 @@ async def get_candidate_dossier(candidate_id: str) -> dict[str, Any]:
     }
 
 
-def _novelty_compact(result: dict[str, Any], legend: cx.Legend) -> dict[str, Any]:
-    out = {"status": result["status"], "cone_targets": result["cone_targets_searched"]}
-    if result["near_matches"]:
-        out["near"] = cx.near_matches(result["near_matches"], legend)
-    return out
+def _novelty_rows(
+    label: str | None, r: dict[str, Any], legend: cx.Legend
+) -> tuple[list[list[Any]], list[list[Any]]]:
+    prefix = [label] if label is not None else []
+    near = [[*prefix, *row] for row in cx.near_matches(r["near_matches"], legend)]
+    var = [[*prefix, *row] for row in cx.variable_matches(r.get("variable_matches", []), legend)]
+    return near, var
+
+
+async def _novelty_batch(
+    queries: list[dict[str, Any]],
+    cone_radius_arcsec: float,
+    period_tolerance_percent: float,
+    harmonic_tolerance_percent: float,
+) -> dict[str, Any]:
+    if AsyncSessionLocal is not None:
+        async with AsyncSessionLocal() as session:
+            return await novelty.check_many(
+                CatalogService(session),
+                queries,
+                cone_radius_arcsec,
+                period_tolerance_percent,
+                harmonic_tolerance_percent,
+            )
+    async with _client(120.0) as client:
+        resp = await client.post(
+            "/v1/novelty/batch",
+            json={
+                "signals": queries,
+                "cone_radius_arcsec": min(float(cone_radius_arcsec), novelty.MAX_CONE_ARCSEC),
+                "period_tolerance_percent": period_tolerance_percent,
+                "harmonic_tolerance_percent": harmonic_tolerance_percent,
+            },
+        )
+        resp.raise_for_status()
+        return resp.json()
 
 
 @tool("check_novelty")
@@ -482,42 +517,36 @@ async def check_novelty(
     ra_deg: float,
     dec_deg: float,
     period_d: float,
-    cone_radius_arcsec: float = 30.0,
+    cone_radius_arcsec: float = novelty.DEFAULT_CONE_ARCSEC,
     period_tolerance_percent: float = 1.0,
     harmonic_tolerance_percent: float = 1.0,
     format: Format = "full",
 ) -> dict[str, Any]:
     """
     Checks a signal against every indexed catalogue. Returns evidence, never a boolean:
-    - checked_sources: one entry per catalogue with its current coverage (reports and
-      signals indexed, last ingest time, pinned commit for git-hosted sources)
+    - status: near_matches_found (a catalogued planet/candidate signal), else
+      variable_star_match (a catalogued eclipsing binary or variable star at the period or a
+      harmonic, or an eclipsing binary on the same star), else no_match_in_checked_sources
     - near_matches: catalogued signals inside the cone at the same period or a harmonic
       (1/4, 1/3, 1/2, 2, 3, 4), with every catalogue that reports each one
-    - cone_targets_searched: all catalogued targets inside the cone (searched exhaustively,
-      including across RA 0/360)
-    cone_radius_arcsec is capped at 3600. For many signals use check_novelty_bulk.
+    - variable_matches: TESS EB, Gaia DR3 eclipsing binaries and VSX variables inside the
+      cone at the period or a harmonic; a binary within a pixel or two is the usual source
+      of a false transit. known_transit marks VSX "EP" entries (already-reported transits)
+    - checked_sources: every catalogue with its coverage (last ingest, pinned commit)
+    The default 120 arcsec cone covers the ~2 arcmin over which TESS apertures pick up
+    neighbours' light (a pixel is 21 arcsec); it is capped at 3600. For many signals use
+    check_novelty_bulk.
     """
     if not period_d or period_d <= 0:
         raise ValueError("period_d must be positive")
     radius = min(float(cone_radius_arcsec), novelty.MAX_CONE_ARCSEC)
-
-    if AsyncSessionLocal is not None:
-        async with AsyncSessionLocal() as session:
-            service = CatalogService(session)
-            items = novelty.cone_items_from_db(await service.cone_search(ra_deg, dec_deg, radius))
-            sources = novelty.serialise_sources(await service.get_source_status())
-    else:
-        async with _client() as client:
-            resp = await client.get(
-                "/v1/cone",
-                params={"ra_deg": ra_deg % 360.0, "dec_deg": dec_deg, "radius_arcsec": radius},
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            items = data["items"]
-            sources = data["sources"]
-
-    result = novelty.evidence(items, period_d, period_tolerance_percent, harmonic_tolerance_percent)
+    batch = await _novelty_batch(
+        [{"ra_deg": ra_deg, "dec_deg": dec_deg, "period_d": period_d}],
+        radius,
+        period_tolerance_percent,
+        harmonic_tolerance_percent,
+    )
+    result = batch["results"][0]
     query = {
         "ra_deg": ra_deg,
         "dec_deg": dec_deg,
@@ -528,32 +557,41 @@ async def check_novelty(
     }
     if format == "compact":
         legend = cx.Legend()
-        out = _novelty_compact(result, legend)
-        if "near" in out:
-            out["near"] = cx.table(cx.NEAR_MATCH_COLS, out["near"])
+        near, var = _novelty_rows(None, result, legend)
+        out: dict[str, Any] = {
+            "status": result["status"],
+            "cone_targets": result["cone_targets_searched"],
+            "variable_stars": result.get("variable_stars_searched", 0),
+        }
+        if near:
+            out["near"] = cx.table(cx.NEAR_MATCH_COLS, near)
+        if var:
+            out["var"] = cx.table(cx.VARIABLE_MATCH_COLS, var)
         return {
             **out,
             "query": query,
-            "checked_sources": cx.checked_sources(sources),
-            "known_unindexed_sources": novelty.KNOWN_UNINDEXED_SOURCES,
+            "checked_sources": cx.checked_sources(batch["checked_sources"]),
+            "known_unindexed_sources": batch["known_unindexed_sources"],
             "legend": legend.render(),
-            "epistemic_warning": novelty.NOVELTY_WARNING,
+            "epistemic_warning": batch["epistemic_warning"],
         }
     return {
         "status": result["status"],
         "query": query,
-        "checked_sources": sources,
+        "checked_sources": batch["checked_sources"],
         "cone_targets_searched": result["cone_targets_searched"],
         "near_matches": result["near_matches"],
-        "known_unindexed_sources": novelty.KNOWN_UNINDEXED_SOURCES,
-        "epistemic_warning": novelty.NOVELTY_WARNING,
+        "variable_stars_searched": result.get("variable_stars_searched", 0),
+        "variable_matches": result.get("variable_matches", []),
+        "known_unindexed_sources": batch["known_unindexed_sources"],
+        "epistemic_warning": batch["epistemic_warning"],
     }
 
 
 @tool("check_novelty_bulk")
 async def check_novelty_bulk(
     signals: list[dict[str, Any]],
-    cone_radius_arcsec: float = 30.0,
+    cone_radius_arcsec: float = novelty.DEFAULT_CONE_ARCSEC,
     period_tolerance_percent: float = 1.0,
     harmonic_tolerance_percent: float = 1.0,
     format: Format = "compact",
@@ -561,49 +599,43 @@ async def check_novelty_bulk(
     """
     check_novelty for up to 200 signals in one call. Each signal is
     {"ra_deg": float, "dec_deg": float, "period_d": float, "label": optional str}; results come
-    back in order, keyed by label (or the index). checked_sources, the unindexed-source list
-    and the epistemic warning are reported once for the whole batch. A signal with a
-    non-positive period gets an error entry instead of evidence. Never returns a boolean.
+    back in order, keyed by label (or the index). Statuses and match lists are as in
+    check_novelty (catalogued signals in "near", eclipsing binaries / variables in "var").
+    checked_sources, the unindexed-source list and the epistemic warning are reported once.
+    A signal with a non-positive period gets an error entry instead of evidence. Never
+    returns a boolean.
     """
-    queries = signals[:200]
-    if AsyncSessionLocal is not None:
-        async with AsyncSessionLocal() as session:
-            result = await novelty.check_many(
-                CatalogService(session),
-                queries,
-                cone_radius_arcsec,
-                period_tolerance_percent,
-                harmonic_tolerance_percent,
-            )
-    else:
-        async with _client(120.0) as client:
-            resp = await client.post(
-                "/v1/novelty/batch",
-                json={
-                    "signals": queries,
-                    "cone_radius_arcsec": min(float(cone_radius_arcsec), novelty.MAX_CONE_ARCSEC),
-                    "period_tolerance_percent": period_tolerance_percent,
-                    "harmonic_tolerance_percent": harmonic_tolerance_percent,
-                },
-            )
-            resp.raise_for_status()
-            result = resp.json()
+    result = await _novelty_batch(
+        signals[:200], cone_radius_arcsec, period_tolerance_percent, harmonic_tolerance_percent
+    )
     if format != "compact":
         return result
     legend = cx.Legend()
-    summary, near_rows = [], []
+    summary, near_rows, var_rows = [], [], []
     for r in result["results"]:
         if "error" in r:
-            summary.append([r["label"], "error: " + r["error"], None, 0])
+            summary.append([r["label"], "error: " + r["error"], None, 0, None, 0])
             continue
+        near, var = _novelty_rows(r["label"], r, legend)
         summary.append(
-            [r["label"], r["status"], r["cone_targets_searched"], len(r["near_matches"])]
+            [
+                r["label"],
+                r["status"],
+                r["cone_targets_searched"],
+                len(near),
+                r.get("variable_stars_searched", 0),
+                len(var),
+            ]
         )
-        near_rows.extend([r["label"], *row] for row in cx.near_matches(r["near_matches"], legend))
+        near_rows.extend(near)
+        var_rows.extend(var)
     return {
         "query": result["query"],
-        "results": cx.table(["label", "status", "cone_targets", "near"], summary),
+        "results": cx.table(
+            ["label", "status", "cone_targets", "near", "variable_stars", "var"], summary
+        ),
         "near": cx.table(["label", *cx.NEAR_MATCH_COLS], near_rows),
+        "var": cx.table(["label", *cx.VARIABLE_MATCH_COLS], var_rows),
         "checked_sources": cx.checked_sources(result["checked_sources"]),
         "known_unindexed_sources": result["known_unindexed_sources"],
         "legend": legend.render(),

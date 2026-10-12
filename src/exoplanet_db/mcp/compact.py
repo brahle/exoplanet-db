@@ -36,6 +36,12 @@ MATCH_CODES = {
     "harmonic_alias": "H",
     "same_star_period_unknown": "S?",
 }
+VARIABLE_MATCH_CODES = {
+    "variable_period_match": "P",
+    "variable_harmonic": "H",
+    "same_star_eclipsing_binary": "S",
+}
+VARIABLE_CATALOGUE_CODES = {"tess_eb": "teb", "gaia_dr3_eb": "geb", "vsx": "vsx"}
 
 
 class Legend:
@@ -63,6 +69,12 @@ class Legend:
 
     def match(self, value: str | None) -> str | None:
         return self.code("match", MATCH_CODES, value)
+
+    def vmatch(self, value: str | None) -> str | None:
+        return self.code("vmatch", VARIABLE_MATCH_CODES, value)
+
+    def vcat(self, value: str | None) -> str | None:
+        return self.code("vcat", VARIABLE_CATALOGUE_CODES, value)
 
     def render(self) -> dict[str, dict[str, str]]:
         return {k: dict(sorted(v.items())) for k, v in sorted(self.used.items())}
@@ -209,13 +221,44 @@ NEAR_MATCH_COLS = [
 ]
 
 
+VARIABLE_MATCH_COLS = [
+    "cat",
+    "name",
+    "type",
+    "eb",
+    "sep_arcsec",
+    "P_d",
+    "ratio",
+    "match",
+    "mag",
+]
+
+
+def variable_matches(matches: list[dict[str, Any]], legend: Legend) -> list[list[Any]]:
+    return [
+        [
+            legend.vcat(m["catalogue"]),
+            m.get("name") or m.get("source_id"),
+            m.get("var_type"),
+            1 if m.get("eclipsing") else 0,
+            m["separation_arcsec"],
+            sig(m.get("catalog_period_d"), 7),
+            m.get("period_ratio"),
+            legend.vmatch(m["match_reason"]),
+            rnd(m.get("mag"), 2),
+        ]
+        for m in matches
+    ]
+
+
 def checked_sources(sources: list[dict[str, Any]]) -> dict[str, Any]:
+    """records: signals indexed (signal catalogues) or stars (variable catalogues)."""
     return table(
-        ["source", "signals", "last_ingested", "commit"],
+        ["source", "records", "last_ingested", "commit"],
         [
             [
                 s["source_name"],
-                s.get("signals"),
+                s.get("signals", s.get("variable_stars")),
                 (s.get("last_ingested_utc") or "")[:10] or None,
                 (s.get("commit_sha") or "")[:12] or None,
             ]

@@ -273,6 +273,11 @@ class PlanetPhysics(BaseModel):
 
 class CandidateDetailResponse(CandidateSummary):
     score_factors: list[ScoreFactor] = Field(default_factory=list)
+    variable_matches: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Catalogued eclipsing binaries / variable stars within 120 arcsec of the "
+        "host at this period, twice or half of it (TESS EB, Gaia DR3 EB, VSX)",
+    )
     host_star: HostStarResponse | None = None
     epoch_err_d: float | None = None
     planet: PlanetPhysics | None = None
@@ -423,7 +428,9 @@ async def list_sources(session: AsyncSession = Depends(get_session)):
 async def cone_search(
     ra_deg: float = Query(..., ge=0.0, lt=360.0),
     dec_deg: float = Query(..., ge=-90.0, le=90.0),
-    radius_arcsec: float = Query(30.0, gt=0.0, le=3600.0),
+    radius_arcsec: float = Query(
+        120.0, gt=0.0, le=3600.0, description="TESS pixels are 21 arcsec; light leaks ~2 arcmin"
+    ),
     session: AsyncSession = Depends(get_session),
 ):
     """Every catalogued target within the radius (no paging, RA-wrap safe), nearest first."""
@@ -492,7 +499,9 @@ class NoveltyQuery(BaseModel):
 
 class NoveltyBatchRequest(BaseModel):
     signals: list[NoveltyQuery] = Field(min_length=1, max_length=200)
-    cone_radius_arcsec: float = Field(30.0, gt=0.0, le=3600.0)
+    cone_radius_arcsec: float = Field(
+        120.0, gt=0.0, le=3600.0, description="TESS pixels are 21 arcsec; light leaks ~2 arcmin"
+    )
     period_tolerance_percent: float = Field(1.0, gt=0.0, le=50.0)
     harmonic_tolerance_percent: float = Field(1.0, gt=0.0, le=50.0)
 
@@ -737,6 +746,7 @@ async def get_candidate(
         scientific_limits=signal.scientific_limits,
         planet_score=signal.planet_score,
         score_factors=[ScoreFactor(**f) for f in (signal.score_factors or [])],
+        variable_matches=signal.variable_matches or [],
         source_names=sorted({src["source_name"] for src in detail["sources"]}),
         host_star=host_star,
         planet=PlanetPhysics(**detail["planet"]),

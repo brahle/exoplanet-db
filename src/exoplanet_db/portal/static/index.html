@@ -310,8 +310,8 @@
           <li><code>resolve_targets(identifiers[], format)</code> — Batch: exact lookup of up to 500 TIC / Gaia ids, star or signal names, TOI or CTOI keys and TOI hosts in one call.</li>
           <li><code>search_signals(search, source[], disposition[], period / depth / duration / score ranges, localisation[], timing[], sort, limit, offset, format)</code> — Filter catalogued signals; up to 500 per page.</li>
           <li><code>get_candidates(ids[], format)</code> — Batch: up to 500 candidates by id or 12-character id prefix in one call.</li>
-          <li><code>get_candidate_dossier(candidate_id)</code> — One candidate in full: ephemeris with uncertainties, host star, planet score with its factors, localisation, timing, limits and every source with a link.</li>
-          <li><code>check_novelty(ra_deg, dec_deg, period_d, …, format)</code> — Evidence against every indexed catalogue (cone + period and harmonic matches), never a boolean.</li>
+          <li><code>get_candidate_dossier(candidate_id)</code> — One candidate in full: ephemeris with uncertainties, host star, planet score with its factors, localisation, timing, limits, catalogued variables at its period, dossier vetting and every source with a link.</li>
+          <li><code>check_novelty(ra_deg, dec_deg, period_d, …, format)</code> — Evidence against every indexed catalogue, never a boolean: catalogued signals and TESS EB / Gaia DR3 eclipsing-binary / VSX variables within 120″ (default) at the period or a harmonic.</li>
           <li><code>check_novelty_bulk(signals[], …, format)</code> — Batch: novelty evidence for up to 200 signals, with the checked sources reported once.</li>
           <li><code>get_observation_queue(lat, lon, start, end, source[], min_planet_score, altitude / twilight / Moon limits, format)</code> — Observable transits from a site over up to 7 days, best first.</li>
           <li><code>get_catalog_stats()</code> — Live counts per source and disposition.</li>
@@ -410,7 +410,7 @@ pip install git+https://github.com/brahle/exoplanet-db.git
         <strong>Community Dataset Attribution:</strong> Planetary candidate and community dossiers incorporate data from <em>eumemic/exoplanets</em> and ExoFOP TOI/CTOI registries, distributed under the <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">Creative Commons Attribution 4.0 International (CC BY 4.0)</a> license.
       </div>
       <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 0.5rem; font-size: 0.75rem; color: var(--text-muted);">
-        <span>Exoplanet DB v0.1.29 — Homelab Instance (marica)</span>
+        <span>Exoplanet DB v0.1.30 — Homelab Instance (marica)</span>
         <span>Software released under the MIT License</span>
       </div>
     </div>

@@ -64,6 +64,8 @@ class Evidence:
     dossier_warnings: set[str] = field(default_factory=set)
     dossier_clean_screen: bool = False
     density_tension_widths: float | None = None
+    # Catalogued variables near the host at this period / 2x / half (services/variables.py)
+    variable_matches: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _factor(label: str, delta: int) -> dict[str, Any]:
@@ -177,6 +179,13 @@ def score(e: Evidence) -> tuple[int, list[dict[str, Any]]]:
         )
         total -= 15
 
+    # 4c. A catalogued eclipsing binary or variable at the same period nearby: the dip is
+    # most likely its light in the aperture (TESS pixels are 21 arcsec)
+    flagged = _variable_factor(e.variable_matches)
+    if flagged:
+        factors.append(_factor(*flagged))
+        total += flagged[1]
+
     # 5. Red flags from the transit itself
     radius = e.published_radius_earth
     if radius is None and e.depth_ppm and e.star_radius_rsun and 0 < e.depth_ppm < 1e6:
@@ -222,6 +231,40 @@ def score(e: Evidence) -> tuple[int, list[dict[str, Any]]]:
     return max(1, min(99, total)), factors
 
 
+def _variable_factor(matches: list[dict[str, Any]]) -> tuple[str, int] | None:
+    """The single strongest variable-star match as (label, penalty)."""
+    best: tuple[str, int] | None = None
+    for m in matches:
+        sep = m.get("separation_arcsec") or 0.0
+        name = m.get("name") or m.get("source_id")
+        what = (
+            "known transiting planet"
+            if m.get("known_transit")
+            else "eclipsing binary"
+            if m.get("eclipsing")
+            else f"variable star ({m.get('var_type') or 'type unknown'})"
+        )
+        ratio = m.get("period_ratio") or 1.0
+        at = "the same period" if abs(ratio - 1.0) < 0.01 else f"{ratio:g}\u00d7 the period"
+        if sep <= 2.5:
+            if m.get("known_transit") or not m.get("eclipsing"):
+                continue  # the target itself listed as a transit host or pulsator
+            delta = -10
+            label = f"Listed as an {what} by {m['catalogue']} ({name}) at {at}"
+        elif m.get("known_transit"):
+            delta = -10
+            label = f"A {what} {sep:.0f}\u2033 away ({name}) at {at}"
+        elif sep <= 60.0:
+            delta = -25 if m.get("eclipsing") else -15
+            label = f"Catalogued {what} {sep:.0f}\u2033 away ({name}, {m['catalogue']}) at {at}: likely contamination"
+        else:
+            delta = -10 if m.get("eclipsing") else -5
+            label = f"Catalogued {what} {sep:.0f}\u2033 away ({name}, {m['catalogue']}) at {at}"
+        if best is None or delta < best[1]:
+            best = (label, delta)
+    return best
+
+
 async def score_signals(session: AsyncSession) -> dict[str, int]:
     """Recompute and store planet_score / score_factors for every signal."""
     signals = (
@@ -232,6 +275,7 @@ async def score_signals(session: AsyncSession) -> dict[str, int]:
                 Signal.current_disposition,
                 Signal.source_localisation_status,
                 Signal.timing_consistency_status,
+                Signal.variable_matches,
                 Signal.primary_depth_ppm,
                 Target.radius_rsun,
             ).join(Target, Target.id == Signal.target_id)
@@ -239,8 +283,9 @@ async def score_signals(session: AsyncSession) -> dict[str, int]:
     ).all()
     ev: dict[str, Evidence] = {}
     by_target: dict[str, list[str]] = defaultdict(list)
-    for sid, tid, disp, loc, timing, depth, rstar in signals:
+    for sid, tid, disp, loc, timing, variables, depth, rstar in signals:
         ev[sid] = Evidence(
+            variable_matches=variables or [],
             disposition=disp,
             localisation=loc or "unresolved",
             timing=timing or "unresolved",
