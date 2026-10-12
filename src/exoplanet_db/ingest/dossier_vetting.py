@@ -10,8 +10,12 @@ dossier report as raw_payload["_vetting"], which scoring and the API read.
 from __future__ import annotations
 
 import json
+import logging
+import re
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 VETTING_KEY = "_vetting"
 LIMIT_PREFIX = "exoplanet-candidates vetting"
@@ -59,27 +63,45 @@ def _review_kind(entry: dict[str, Any]) -> str:
     return "other_review"
 
 
-def load_reviews(repo_dir: Path) -> dict[str, dict[str, dict[str, Any]]]:
-    """Supplementary reviews (reviews/*.json) per signal id, latest per kind.
+_SIGNAL_ID = re.compile(r"tic-[0-9]+-s[0-9]{2}")
+MENTIONED = "mentioned_in"
 
-    Kinds: physical_fit_review (sampled chains), point_fit_review (point refits), replay
-    (a fresh-environment replay certificate) and other_review (any shape not yet known,
-    kept by file name so a new kind of review is never silently dropped).
+
+def load_reviews(repo_dir: Path) -> dict[str, dict[str, Any]]:
+    """Supplementary reviews (reviews/*.json) per signal id.
+
+    Per-signal entries ({"signals": [{"signal_id": ...}]}) are kept latest per kind:
+    physical_fit_review (sampled chains), point_fit_review (point refits), replay (a
+    fresh-environment replay certificate) and other_review. Every review file, whatever its
+    shape (many are batch-level summaries), is also listed under MENTIONED for each signal id
+    it names, so a new kind of review is visible rather than dropped. A file that cannot be
+    read is skipped: supplementary reviews never block the dossier ingest.
     """
-    out: dict[str, dict[str, dict[str, Any]]] = {}
+    out: dict[str, dict[str, Any]] = {}
     reviews = repo_dir / "reviews"
     if not reviews.is_dir():
         return out
     for path in sorted(reviews.glob("*.json")):
-        data = _load(path) or {}
-        for entry in data.get("signals") or []:
+        rel = f"reviews/{path.name}"
+        try:
+            text = path.read_text(encoding="utf-8")
+            data = json.loads(text)
+        except (OSError, ValueError) as exc:
+            logger.warning("Skipping unreadable review %s: %s", rel, exc)
+            continue
+        for sid in sorted(set(_SIGNAL_ID.findall(text))):
+            out.setdefault(sid, {}).setdefault(MENTIONED, []).append(rel)
+        entries = data.get("signals") if isinstance(data, dict) else None
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
             sid = entry.get("signal_id") if isinstance(entry, dict) else None
-            if not sid:
+            if not isinstance(sid, str):
                 continue
             kind = _review_kind(entry)
             review = {
-                "file": f"reviews/{path.name}",
-                "reviewed_utc": data.get("reviewed_utc"),
+                "file": rel,
+                "reviewed_utc": data.get("reviewed_utc") or data.get("assessment_date"),
                 "entry": entry,
             }
             current = out.setdefault(sid, {}).get(kind)
@@ -141,8 +163,12 @@ def _reviews_summary(reviews: dict[str, dict[str, Any]]) -> dict[str, Any]:
             "file": reviews["replay"]["file"],
             "status": reviews["replay"]["entry"].get("status"),
         }
+    summarised = {r["file"] for k, r in reviews.items() if k != MENTIONED}
+    others = [f for f in reviews.get(MENTIONED, []) if f not in summarised]
     if "other_review" in reviews:
-        out["other_reviews"] = [reviews["other_review"]["file"]]
+        others = sorted({*others, reviews["other_review"]["file"]})
+    if others:
+        out["other_reviews"] = others
     return out
 
 

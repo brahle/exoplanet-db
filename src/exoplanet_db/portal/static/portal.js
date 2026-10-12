@@ -214,7 +214,7 @@ function renderVetting(v) {
       ${warnings ? `<ul class="detail-limits vet-warnings">${warnings}</ul>` : '<p class="detail-muted">No published warning flags.</p>'}
       ${facts.length ? `<ul class="detail-limits">${facts.map((f) => `<li>${f}</li>`).join('')}</ul>` : ''}
       ${(v.open_requirements || []).length ? `<p class="detail-muted"><strong>Still open:</strong> ${v.open_requirements.map((r) => escapeHtml(r.replace(/_/g, ' '))).join(', ')}</p>` : ''}
-      ${v.url ? `<p class="detail-links"><a href="${escapeHtml(v.url)}" target="_blank" rel="noopener noreferrer">Vetting findings ↗</a></p>` : ''}
+      ${v.url ? `<p class="detail-links"><a href="${escapeHtml(v.url)}" target="_blank" rel="noopener noreferrer">Vetting findings ↗</a>${(v.other_reviews || []).map((f) => `<a href="${escapeHtml(`${v.url.split('/candidates/')[0]}/${f}`)}" target="_blank" rel="noopener noreferrer">${escapeHtml(f.replace(/^reviews\//, '').replace(/\.json$/, ''))} ↗</a>`).join('')}</p>` : ''}
     </section>`;
 }
 

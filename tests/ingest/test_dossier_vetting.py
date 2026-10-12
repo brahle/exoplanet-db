@@ -234,6 +234,11 @@ async def test_streamed_archive_hashes_everything_and_keeps_only_json(factory, t
     (src / "reviews" / "novel.json").write_text(
         json.dumps({"reviewed_utc": "2026-10-12", "signals": [{"signal_id": DOSSIER, "x": 1}]})
     )
+    # batch-level reviews: "signals" is a count, the dossier is named elsewhere
+    (src / "reviews" / "batch.json").write_text(
+        json.dumps({"signals": 24, "groups": [{"members": [DOSSIER, "tic-1-s01"]}]})
+    )
+    (src / "reviews" / "broken.json").write_text("{not json")
 
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
@@ -257,7 +262,10 @@ async def test_streamed_archive_hashes_everything_and_keeps_only_json(factory, t
     assert review["radius_ratio"] == 0.187 and review["density_tension_prior_widths"] == 16.2
     point = rep.raw_payload["_vetting"]["point_fit_review"]
     assert point["density_ratio_to_catalogue"] == 42.04 and point["replay"] == "replay_passed"
-    assert rep.raw_payload["_vetting"]["other_reviews"] == ["reviews/novel.json"]
+    assert rep.raw_payload["_vetting"]["other_reviews"] == [
+        "reviews/batch.json",
+        "reviews/novel.json",
+    ]
     assert any(
         "4/4 optimizer starts converged; fresh-environment replay passed" in line
         for line in sig.scientific_limits
