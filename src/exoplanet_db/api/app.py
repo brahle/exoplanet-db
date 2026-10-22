@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from exoplanet_db.api.sse_cap import SSESessionCap
 from exoplanet_db.ingest.nasa_tap import NASA_ACKNOWLEDGEMENT
 from exoplanet_db.services.catalog import CatalogService
 
@@ -106,8 +107,10 @@ mcp_security = TransportSecuritySettings(
     ],
     allowed_origins=[PUBLIC_BASE_URL, "http://localhost:*", "http://127.0.0.1:*"],
 )
-app.mount("/mcp", mcp.sse_app(transport_security=mcp_security))
-app.mount("/sse", mcp.sse_app(sse_path="/", transport_security=mcp_security))
+# One replica holds every session: cap the total here; Traefik caps each client IP at the edge.
+sse_sessions = SSESessionCap(max_sessions=int(os.getenv("MCP_MAX_SSE_SESSIONS", "100")))
+app.mount("/mcp", sse_sessions.wrap(mcp.sse_app(transport_security=mcp_security)))
+app.mount("/sse", sse_sessions.wrap(mcp.sse_app(sse_path="/", transport_security=mcp_security)))
 
 PORTAL_STATIC_DIR = Path(__file__).resolve().parent.parent / "portal" / "static"
 if not (PORTAL_STATIC_DIR / "index.html").exists():

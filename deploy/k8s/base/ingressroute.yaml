@@ -25,6 +25,46 @@ spec:
     average: 100
     burst: 50
 ---
+# Per client IP. The observation queue runs astropy over every signal in a window of up to 7 days and
+# novelty/batch runs up to 200 cone searches; a person using the portal stays well inside this.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: exoplanet-ratelimit-expensive
+  namespace: exoplanet-db
+spec:
+  rateLimit:
+    average: 30
+    period: 1m
+    burst: 10
+---
+# Per client IP, for MCP stream opens and tool-call POSTs (each tool call is a catalogue query).
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: exoplanet-ratelimit-mcp
+  namespace: exoplanet-db
+spec:
+  rateLimit:
+    average: 120
+    period: 1m
+    burst: 30
+---
+# At most 5 open SSE streams per client IP (429 beyond). inFlightReq groups by Host header unless a
+# criterion is given, so ipStrategy (depth 0 = the connection's remote address) is required here.
+# The total across all clients is capped in the app (MCP_MAX_SSE_SESSIONS, 503 beyond).
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: exoplanet-sse-inflight
+  namespace: exoplanet-db
+spec:
+  inFlightReq:
+    amount: 5
+    sourceCriterion:
+      ipStrategy:
+        depth: 0
+---
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:
@@ -33,6 +73,35 @@ metadata:
 spec:
   entryPoints: [websecure]
   routes:
+    # SSE stream opens (GET /mcp/sse, GET /sse/); message POSTs fall through to the MCP route.
+    - match: (Host(`exoplanets.brahle.com`) || Host(`exoplanet.brahle.com`) || Host(`exoplanets.marica.brahle.com`) || Host(`exoplanet.marica.brahle.com`) || Host(`exoplanet-api.marica.brahle.com`)) && Method(`GET`) && (Path(`/mcp/sse`) || PathPrefix(`/sse`))
+      kind: Rule
+      priority: 300
+      middlewares:
+        - name: exoplanet-ratelimit
+        - name: exoplanet-ratelimit-mcp
+        - name: exoplanet-sse-inflight
+      services:
+        - name: exoplanet-db-api
+          port: 8000
+    - match: (Host(`exoplanets.brahle.com`) || Host(`exoplanet.brahle.com`) || Host(`exoplanets.marica.brahle.com`) || Host(`exoplanet.marica.brahle.com`) || Host(`exoplanet-api.marica.brahle.com`)) && (PathPrefix(`/mcp`) || PathPrefix(`/sse`))
+      kind: Rule
+      priority: 200
+      middlewares:
+        - name: exoplanet-ratelimit
+        - name: exoplanet-ratelimit-mcp
+      services:
+        - name: exoplanet-db-api
+          port: 8000
+    - match: (Host(`exoplanets.brahle.com`) || Host(`exoplanet.brahle.com`) || Host(`exoplanets.marica.brahle.com`) || Host(`exoplanet.marica.brahle.com`) || Host(`exoplanet-api.marica.brahle.com`)) && (PathPrefix(`/v1/observations`) || PathPrefix(`/v1/novelty`))
+      kind: Rule
+      priority: 200
+      middlewares:
+        - name: exoplanet-ratelimit
+        - name: exoplanet-ratelimit-expensive
+      services:
+        - name: exoplanet-db-api
+          port: 8000
     - match: Host(`exoplanets.brahle.com`) || Host(`exoplanet.brahle.com`) || Host(`exoplanets.marica.brahle.com`) || Host(`exoplanet.marica.brahle.com`) || Host(`exoplanet-api.marica.brahle.com`)
       kind: Rule
       priority: 100
