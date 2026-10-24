@@ -230,25 +230,48 @@ class ExoFOPIngest:
 EXOFOP_CTOI_URL = "https://exofop.ipac.caltech.edu/tess/download_ctoi.php?sort=ctoi&output=csv"
 
 
-async def fetch_and_ingest_ctois(session: AsyncSession) -> int:
-    """Downloads the full ExoFOP CTOI table and ingests every row."""
+CTOI_ATTEMPTS = 3
+
+
+async def download_ctoi_records(client, sleep=None) -> list[dict[str, Any]]:
+    """Fetch and parse the CTOI export, retrying what waiting can fix.
+
+    ExoFOP sits behind a CDN that answers 522 and drops slow reads; the 2026-10-22 and 10-24
+    ingests both lost the source to a single such failure. Timeouts, connection errors, 5xx and
+    an empty/HTML 200 are retried with a growing pause. A 4xx is raised at once: a moved URL
+    does not come back by waiting."""
     import asyncio
 
     import httpx
 
-    ingest = ExoFOPIngest(session)
-    records: list[dict[str, Any]] = []
+    sleep = sleep or asyncio.sleep
     body = ""
-    async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
-        for attempt in range(3):
+    for attempt in range(CTOI_ATTEMPTS):
+        last = attempt == CTOI_ATTEMPTS - 1
+        try:
             resp = await client.get(EXOFOP_CTOI_URL)
             resp.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code < 500 or last:
+                raise
+        except httpx.TransportError:
+            if last:
+                raise
+        else:
             body = resp.text
-            records = ingest.parse_ctoi_csv(body)
+            records = ExoFOPIngest(None).parse_ctoi_csv(body)
             if records:
-                break
-            await asyncio.sleep(30 * (attempt + 1))
-    if not records:
-        # ExoFOP occasionally answers 200 with an empty or HTML body; never treat that as "no CTOIs"
-        raise ValueError(f"ExoFOP CTOI export parsed to 0 rows ({len(body)} bytes): {body[:200]!r}")
-    return await ingest.ingest_ctois(records)
+                return records
+        if not last:
+            await sleep(30 * (attempt + 1))
+    # ExoFOP occasionally answers 200 with an empty or HTML body; never treat that as "no CTOIs"
+    raise ValueError(f"ExoFOP CTOI export parsed to 0 rows ({len(body)} bytes): {body[:200]!r}")
+
+
+async def fetch_and_ingest_ctois(session: AsyncSession) -> int:
+    """Downloads the full ExoFOP CTOI table and ingests every row."""
+    import httpx
+
+    async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
+        records = await download_ctoi_records(client)
+    return await ExoFOPIngest(session).ingest_ctois(records)

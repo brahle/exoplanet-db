@@ -56,3 +56,67 @@ async def test_ctoi_ingest_idempotent_and_keeps_unperiodic_rows():
         assert single.primary_period_d == 0.0
         assert any("No period" in lim for lim in single.scientific_limits)
     await engine.dispose()
+
+
+def _mock_client(responses):
+    """httpx client whose transport replays `responses` in order: an int is a status code with
+    an empty body, an exception instance is raised, a str is a 200 body."""
+    import httpx
+
+    calls = iter(responses)
+
+    def handler(request):
+        item = next(calls)
+        if isinstance(item, Exception):
+            raise item
+        if isinstance(item, int):
+            return httpx.Response(item, request=request)
+        return httpx.Response(200, text=item, request=request)
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+async def _no_sleep(_s):
+    return None
+
+
+async def test_ctoi_download_retries_timeouts_and_5xx():
+    """ExoFOP sits behind a CDN that answers 522 and drops slow reads (2026-10-22 and 10-24
+    runs both failed on the first attempt). A transient failure must be retried, not end the
+    source."""
+    import httpx
+
+    from exoplanet_db.ingest.exofop import download_ctoi_records
+
+    async with _mock_client([httpx.ReadTimeout(""), 522, CTOI_CSV]) as client:
+        recs = await download_ctoi_records(client, sleep=_no_sleep)
+    assert len(recs) == 3
+
+
+async def test_ctoi_download_gives_up_after_attempts():
+    import httpx
+
+    from exoplanet_db.ingest.exofop import download_ctoi_records
+
+    async with _mock_client([522, 522, 522, 522]) as client:
+        with pytest.raises(httpx.HTTPStatusError):
+            await download_ctoi_records(client, sleep=_no_sleep)
+
+
+async def test_ctoi_download_does_not_retry_client_errors():
+    """A 404 means the URL changed, which waiting will not fix."""
+    import httpx
+
+    from exoplanet_db.ingest.exofop import download_ctoi_records
+
+    async with _mock_client([404, CTOI_CSV]) as client:
+        with pytest.raises(httpx.HTTPStatusError):
+            await download_ctoi_records(client, sleep=_no_sleep)
+
+
+async def test_ctoi_download_still_refuses_an_empty_body():
+    from exoplanet_db.ingest.exofop import download_ctoi_records
+
+    async with _mock_client(["", "<html>busy</html>", ""]) as client:
+        with pytest.raises(ValueError, match="parsed to 0 rows"):
+            await download_ctoi_records(client, sleep=_no_sleep)
